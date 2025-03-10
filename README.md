@@ -22,17 +22,17 @@ The command to install PyTorch is as follows:
 
 Mar 10, 2025 (by vjumpkung):
 
-- SDXL support seperate Learning Rate in CLIP-L CLIP-G
+- SDXL support seperated Learning Rate in CLIP-L CLIP-G
 
-example seperate learning rate args
+example seperated learning rate value args (toml config way)
 
 ```toml
 text_encoder_lr=["5e-5","1e-5",]
 ```
 
-- disable CLIP-G training in SDXL (no SD3) add network args
+- disabled CLIP-G training in SDXL (no SD3) by adding network args
 
-network args
+network args (toml config way)
 
 ```toml
 network_args = [ "clip_l_only=true",]
