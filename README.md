@@ -1,5 +1,11 @@
 This repository contains training, generation and utility scripts for Stable Diffusion.
 
+## Disclaimer 
+
+- This fork is try to seperate CLIP-L and CLIP-G learning rate and CLIP-G can disable training now see Recent Updates for details
+
+- Repo นี้ใช้เพื่อการทดลองแยก CLIP-L กับ CLIP-G ในการเทรน LoRA บน SDXL เท่านั้น
+
 ## FLUX.1 and SD3 training (WIP)
 
 This feature is experimental. The options and the training script may change in the future. Please let us know if you have any idea to improve the training.
@@ -13,6 +19,26 @@ The command to install PyTorch is as follows:
 - [SD3 training](#sd3-training)
 
 ### Recent Updates
+
+Mar 10, 2025 (by vjumpkung):
+
+- SDXL support seperate Learning Rate in CLIP-L CLIP-G
+
+example seperate learning rate args
+
+```toml
+text_encoder_lr=["5e-5","1e-5",]
+```
+
+- disable CLIP-G training in SDXL (no SD3) add network args
+
+network args
+
+```toml
+network_args = [ "clip_l_only=true",]
+```
+
+*please check way to input in command line it's maybe different.
 
 Mar 6, 2025:
 
@@ -207,13 +233,13 @@ The effect of `--timestep_sampling sigmoid` and `--sigmoid_scale` (when `--times
    - The trained LoRA can be used with ComfyUI.
    - Note: `flux_extract_lora.py`, `convert_flux_lora.py`and `merge_flux_lora.py` do not support CLIP-L and T5XXL LoRA yet.
 
-    | trained LoRA|option|network_args|cache_text_encoder_outputs (*1)|
-    |---|---|---|---|
-    |FLUX.1|`--network_train_unet_only`|-|o|
-    |FLUX.1 + CLIP-L|-|-|o (*2)|
-    |FLUX.1 + CLIP-L + T5XXL|-|`train_t5xxl=True`|-|
-    |CLIP-L (*3)|`--network_train_text_encoder_only`|-|o (*2)|
-    |CLIP-L + T5XXL (*3)|`--network_train_text_encoder_only`|`train_t5xxl=True`|-|
+    | trained LoRA            | option                              | network_args       | cache_text_encoder_outputs (*1) |
+    | ----------------------- | ----------------------------------- | ------------------ | ------------------------------- |
+    | FLUX.1                  | `--network_train_unet_only`         | -                  | o                               |
+    | FLUX.1 + CLIP-L         | -                                   | -                  | o (*2)                          |
+    | FLUX.1 + CLIP-L + T5XXL | -                                   | `train_t5xxl=True` | -                               |
+    | CLIP-L (*3)             | `--network_train_text_encoder_only` | -                  | o (*2)                          |
+    | CLIP-L + T5XXL (*3)     | `--network_train_text_encoder_only` | `train_t5xxl=True` | -                               |
 
     - *1: `--cache_text_encoder_outputs` or `--cache_text_encoder_outputs_to_disk` is also available.
     - *2: T5XXL output can be cached for CLIP-L LoRA training.
@@ -252,16 +278,16 @@ You can specify the rank for each layer in FLUX.1 by specifying the following ne
 
 When network_args is not specified, the default value (`network_dim`) is applied, same as before.
 
-|network_args|target layer|
-|---|---|
-|img_attn_dim|img_attn in DoubleStreamBlock|
-|txt_attn_dim|txt_attn in DoubleStreamBlock|
-|img_mlp_dim|img_mlp in DoubleStreamBlock|
-|txt_mlp_dim|txt_mlp in DoubleStreamBlock|
-|img_mod_dim|img_mod in DoubleStreamBlock|
-|txt_mod_dim|txt_mod in DoubleStreamBlock|
-|single_dim|linear1 and linear2 in SingleStreamBlock|
-|single_mod_dim|modulation in SingleStreamBlock|
+| network_args   | target layer                             |
+| -------------- | ---------------------------------------- |
+| img_attn_dim   | img_attn in DoubleStreamBlock            |
+| txt_attn_dim   | txt_attn in DoubleStreamBlock            |
+| img_mlp_dim    | img_mlp in DoubleStreamBlock             |
+| txt_mlp_dim    | txt_mlp in DoubleStreamBlock             |
+| img_mod_dim    | img_mod in DoubleStreamBlock             |
+| txt_mod_dim    | txt_mod in DoubleStreamBlock             |
+| single_dim     | linear1 and linear2 in SingleStreamBlock |
+| single_mod_dim | modulation in SingleStreamBlock          |
 
 `"verbose=True"` is also available for debugging. It shows the rank of each layer.
 
@@ -624,13 +650,13 @@ Other options are described below.
    - The learning rates for CLIP-L, CLIP-G and T5XXL can be specified separately. Multiple numbers can be specified in `--text_encoder_lr`. For example, `--text_encoder_lr 1e-4 1e-5 5e-6`. The first value is the learning rate for CLIP-L, the second value is for CLIP-G, and the third value is for T5XXL. If you specify only one, the learning rates for CLIP-L, CLIP-G and T5XXL will be the same. If the third value is not specified, the second value is used for T5XXL. If `--text_encoder_lr` is not specified, the default learning rate `--learning_rate` is used for both CLIP-L and T5XXL.
    - The trained LoRA can be used with ComfyUI.
 
-    | trained LoRA|option|network_args|cache_text_encoder_outputs (*1)|
-    |---|---|---|---|
-    |MMDiT|`--network_train_unet_only`|-|o|
-    |MMDiT + CLIP-L + CLIP-G|-|-|o (*2)|
-    |MMDiT + CLIP-L + CLIP-G + T5XXL|-|`train_t5xxl=True`|-|
-    |CLIP-L + CLIP-G (*3)|`--network_train_text_encoder_only`|-|o (*2)|
-    |CLIP-L + CLIP-G + T5XXL (*3)|`--network_train_text_encoder_only`|`train_t5xxl=True`|-|
+    | trained LoRA                    | option                              | network_args       | cache_text_encoder_outputs (*1) |
+    | ------------------------------- | ----------------------------------- | ------------------ | ------------------------------- |
+    | MMDiT                           | `--network_train_unet_only`         | -                  | o                               |
+    | MMDiT + CLIP-L + CLIP-G         | -                                   | -                  | o (*2)                          |
+    | MMDiT + CLIP-L + CLIP-G + T5XXL | -                                   | `train_t5xxl=True` | -                               |
+    | CLIP-L + CLIP-G (*3)            | `--network_train_text_encoder_only` | -                  | o (*2)                          |
+    | CLIP-L + CLIP-G + T5XXL (*3)    | `--network_train_text_encoder_only` | `train_t5xxl=True` | -                               |
 
     - *1: `--cache_text_encoder_outputs` or `--cache_text_encoder_outputs_to_disk` is also available.
     - *2: T5XXL output can be cached for CLIP-L and G LoRA training.
@@ -673,14 +699,14 @@ You can specify the rank for each layer in SD3 by specifying the following netwo
 
 When network_args is not specified, the default value (`network_dim`) is applied, same as before.
 
-|network_args|target layer|
-|---|---|
-|context_attn_dim|attn in context_block|
-|context_mlp_dim|mlp in context_block|
-|context_mod_dim|adaLN_modulation in context_block|
-|x_attn_dim|attn in x_block|
-|x_mlp_dim|mlp in x_block|
-|x_mod_dim|adaLN_modulation in x_block|
+| network_args     | target layer                      |
+| ---------------- | --------------------------------- |
+| context_attn_dim | attn in context_block             |
+| context_mlp_dim  | mlp in context_block              |
+| context_mod_dim  | adaLN_modulation in context_block |
+| x_attn_dim       | attn in x_block                   |
+| x_mlp_dim        | mlp in x_block                    |
+| x_mod_dim        | adaLN_modulation in x_block       |
 
 `"verbose=True"` is also available for debugging. It shows the rank of each layer.
 
