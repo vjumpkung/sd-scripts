@@ -1455,15 +1455,50 @@ class LoRANetwork(torch.nn.Module):
                 )
 
         if self.unet_loras:
-            params, descriptions = assemble_params(
-                self.unet_loras,
-                unet_lr if unet_lr is not None else default_lr,
-                self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio,
-            )
-            all_params.extend(params)
-            lr_descriptions.extend(
-                ["unet" + (" " + d if d else "") for d in descriptions]
-            )
+            if self.block_lr:
+                is_sdxl = False
+                for lora in self.unet_loras:
+                    if (
+                        "input_blocks" in lora.lora_name
+                        or "output_blocks" in lora.lora_name
+                    ):
+                        is_sdxl = True
+                        break
+
+                # 学習率のグラフをblockごとにしたいので、blockごとにloraを分類
+                block_idx_to_lora = {}
+                for lora in self.unet_loras:
+                    idx = get_block_index(lora.lora_name, is_sdxl)
+                    if idx not in block_idx_to_lora:
+                        block_idx_to_lora[idx] = []
+                    block_idx_to_lora[idx].append(lora)
+
+                # blockごとにパラメータを設定する
+                for idx, block_loras in block_idx_to_lora.items():
+                    params, descriptions = assemble_params(
+                        block_loras,
+                        (unet_lr if unet_lr is not None else default_lr)
+                        * self.get_lr_weight(idx),
+                        self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio,
+                    )
+                    all_params.extend(params)
+                    lr_descriptions.extend(
+                        [
+                            f"unet_block{idx}" + (" " + d if d else "")
+                            for d in descriptions
+                        ]
+                    )
+
+            else:
+                params, descriptions = assemble_params(
+                    self.unet_loras,
+                    unet_lr if unet_lr is not None else default_lr,
+                    self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio,
+                )
+                all_params.extend(params)
+                lr_descriptions.extend(
+                    ["unet" + (" " + d if d else "") for d in descriptions]
+                )
 
         return all_params, lr_descriptions
 
