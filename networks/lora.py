@@ -1451,7 +1451,7 @@ class LoRANetwork(torch.nn.Module):
                 )
                 all_params.extend(params)
                 lr_descriptions.extend(
-                    ["textencoder 1 " + (" " + d if d else "") for d in descriptions]
+                    ["textencoder 2 " + (" " + d if d else "") for d in descriptions]
                 )
 
         if self.unet_loras:
