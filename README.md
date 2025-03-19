@@ -30,12 +30,20 @@ example seperated learning rate value args (toml config way)
 text_encoder_lr=["5e-5","1e-5",]
 ```
 
+```bash
+--text_encoder_lr 5e-5 5e-5
+```
+
 - disabled CLIP-G training in SDXL (no SD3) by adding network args
 
 network args (toml config way)
 
 ```toml
 network_args = [ "clip_l_only=true",]
+```
+
+```bash
+--network_args "clip_l_only=true"
 ```
 
 *please check way to input in command line it's maybe different.
