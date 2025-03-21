@@ -20,7 +20,6 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
-*please check way to input in command line it's maybe different.
 Mar 20, 2025:
 - `pytorch-optimizer` is added to requirements.txt. Thank you to gesen2egee for PR [#1985](https://github.com/kohya-ss/sd-scripts/pull/1985). 
   - For example, you can use CAME optimizer with `--optimizer_type "pytorch_optimizer.CAME" --optimizer_args "weight_decay=0.01"`.
@@ -50,6 +49,8 @@ network_args = [ "clip_l_only=true",]
 ```bash
 --network_args "clip_l_only=true"
 ```
+
+*please check way to input in command line it's maybe different.
 
 Mar 6, 2025:
 
