@@ -1044,7 +1044,11 @@ class LoRANetwork(torch.nn.Module):
         "Downsample2D",
         "Upsample2D",
     ]
-    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP"]
+    TEXT_ENCODER_TARGET_REPLACE_MODULE = [
+        "CLIPAttention",
+        "CLIPSdpaAttention",
+        "CLIPMLP",
+    ]
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
 
