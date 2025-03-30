@@ -70,7 +70,7 @@ class NetworkTrainer:
         mean_norm=None,
         maximum_norm=None,
         mean_grad_norm=None,
-        mean_combined_norm=None
+        mean_combined_norm=None,
     ):
         logs = {"loss/current": current_loss, "loss/average": avr_loss}
 
@@ -658,6 +658,10 @@ class NetworkTrainer:
             return
         network_has_multiplier = hasattr(network, "set_multiplier")
 
+        # TODO remove `hasattr`s by setting up methods if not defined in the network like (hacky but works):
+        # if not hasattr(network, "prepare_network"):
+        #    network.prepare_network = lambda args: None
+
         if hasattr(network, "prepare_network"):
             network.prepare_network(args)
         if args.scale_weight_norms and not hasattr(network, "apply_max_norm_regularization"):
@@ -1024,6 +1028,7 @@ class NetworkTrainer:
             "ss_max_validation_steps": args.max_validation_steps,
             "ss_validate_every_n_epochs": args.validate_every_n_epochs,
             "ss_validate_every_n_steps": args.validate_every_n_steps,
+            "ss_resize_interpolation": args.resize_interpolation,
         }
 
         self.update_metadata(metadata, args)  # architecture specific metadata
@@ -1049,6 +1054,7 @@ class NetworkTrainer:
                     "max_bucket_reso": dataset.max_bucket_reso,
                     "tag_frequency": dataset.tag_frequency,
                     "bucket_info": dataset.bucket_info,
+                    "resize_interpolation": dataset.resize_interpolation,
                 }
 
                 subsets_metadata = []
@@ -1066,6 +1072,7 @@ class NetworkTrainer:
                         "enable_wildcard": bool(subset.enable_wildcard),
                         "caption_prefix": subset.caption_prefix,
                         "caption_suffix": subset.caption_suffix,
+                        "resize_interpolation": subset.resize_interpolation,
                     }
 
                     image_dir_or_metadata_file = None
@@ -1412,7 +1419,6 @@ class NetworkTrainer:
                         if hasattr(network, "update_norms"):
                             network.update_norms()
 
-
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
@@ -1473,7 +1479,17 @@ class NetworkTrainer:
 
                 if is_tracking:
                     logs = self.generate_step_logs(
-                        args, current_loss, avr_loss, lr_scheduler, lr_descriptions, optimizer, keys_scaled, mean_norm, maximum_norm, mean_grad_norm, mean_combined_norm
+                        args,
+                        current_loss,
+                        avr_loss,
+                        lr_scheduler,
+                        lr_descriptions,
+                        optimizer,
+                        keys_scaled,
+                        mean_norm,
+                        maximum_norm,
+                        mean_grad_norm,
+                        mean_combined_norm,
                     )
                     self.step_logging(accelerator, logs, global_step, epoch + 1)
 
