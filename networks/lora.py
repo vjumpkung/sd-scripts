@@ -1814,11 +1814,12 @@ class LoRANetwork(torch.nn.Module):
         return torch.stack(grad_norms) if len(grad_norms) > 0 else torch.tensor([])
 
     def weight_norms(self) -> Tensor:
-        weight_norms = []
-        for lora in self.text_encoder_loras + self.unet_loras:
-            if hasattr(lora, "weight_norms") and lora.weight_norms is not None:
-                weight_norms.append(lora.weight_norms.mean(dim=0))
-        return torch.stack(weight_norms) if len(weight_norms) > 0 else torch.tensor([])
+        if hasattr(self, 'ggpo_beta') and hasattr(self, 'ggpo_sigma'):
+            weight_norms = []
+            for lora in self.text_encoder_loras + self.unet_loras:
+                if hasattr(lora, "weight_norms") and lora.weight_norms is not None:
+                    weight_norms.append(lora.weight_norms.mean(dim=0))
+            return torch.stack(weight_norms) if len(weight_norms) > 0 else torch.tensor([])
 
     def combined_weight_norms(self) -> Tensor:
         combined_weight_norms = []
