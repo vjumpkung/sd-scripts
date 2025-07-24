@@ -118,6 +118,7 @@ class DreamBoothDatasetParams(BaseDatasetParams):
     bucket_reso_steps: int = 64
     bucket_no_upscale: bool = False
     prior_loss_weight: float = 1.0
+    repeat_mode: bool = False  # if True, subsets bucket is working...
     
 @dataclass
 class FineTuningDatasetParams(BaseDatasetParams):
