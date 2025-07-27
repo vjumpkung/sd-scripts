@@ -1,10 +1,11 @@
 This repository contains training, generation and utility scripts for Stable Diffusion.
 
-## Disclaimer 
+## About This Fork 
 
-- This fork is try to seperate CLIP-L and CLIP-G learning rate and CLIP-G can disable training now see Recent Updates for details
-
-- Repo นี้ใช้เพื่อการทดลองแยก CLIP-L กับ CLIP-G ในการเทรน LoRA บน SDXL เท่านั้น
+- SDXL CLIP-G (TE2) learning rate can be separated from CLIP-L (TE1).
+- Network args for disabled CLIP-G when create network.lora module.
+- Port LoRA GGPO from Flux.1 to SD1.5 and SDXL.
+- Dreambooth Folder Based bucket resolution for when training in each steps will get same class for better training with many concepts.
 
 ## FLUX.1 and SD3 training (WIP)
 
@@ -21,6 +22,13 @@ If you are using DeepSpeed, please install DeepSpeed with `pip install deepspeed
 - [SD3 training](#sd3-training)
 
 ### Recent Updates
+
+Jul 25, 2025:
+- support Dreambooth folder based bucket resolution using args `--repeat_mode `
+
+screenshot 
+
+<img width="486" height="871" alt="image" src="https://github.com/user-attachments/assets/e3aab2e6-a86b-4975-949e-29dc7b1a76c2" />
 
 Jul 21, 2025:
 - Support for [Lumina-Image 2.0](https://github.com/Alpha-VLLM/Lumina-Image-2.0) has been added in PR [#1927](https://github.com/kohya-ss/sd-scripts/pull/1927) and [#2138](https://github.com/kohya-ss/sd-scripts/pull/2138). Special thanks to sdbds and RockerBOO for their contributions.
