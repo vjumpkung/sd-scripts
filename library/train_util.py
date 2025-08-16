@@ -6450,6 +6450,23 @@ def get_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: tor
     timesteps = timesteps.long().to(device)
     return timesteps
 
+def get_custom_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: torch.device, std: int = 100, tail_weight: float = 0.2, mean_t: int = 300) -> torch.Tensor:
+    gauss = torch.normal(mean_t, std, size=(b_size,), device=device)
+    mask = (gauss < min_timestep) | (gauss >= max_timestep)
+    
+    while mask.any():
+        gauss[mask] = torch.normal(mean_t, std, size=(mask.sum(),), device=device)
+        mask = (gauss < min_timestep) | (gauss >= max_timestep)
+
+    # Uniform tail
+    uniform = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
+
+    # mix
+    mix_mask = torch.rand(b_size, device=device) < tail_weight
+    timesteps = torch.where(mix_mask, uniform, gauss).long()
+
+    return timesteps
+
 
 def get_noise_noisy_latents_and_timesteps(
     args, noise_scheduler, latents: torch.FloatTensor
@@ -6472,7 +6489,14 @@ def get_noise_noisy_latents_and_timesteps(
     min_timestep = 0 if args.min_timestep is None else args.min_timestep
     max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
 
-    timesteps = get_timesteps(min_timestep, max_timestep, b_size, latents.device)
+    if args.custom_timesteps:
+        timesteps = get_custom_timesteps(min_timestep, max_timestep, 
+                                         b_size, latents.device, 
+                                         args.timesteps_std, 
+                                         args.timesteps_tail_weight, 
+                                         args.timesteps_mean_t)
+    else:    
+        timesteps = get_timesteps(min_timestep, max_timestep, b_size, latents.device)
 
     # Add noise to the latents according to the noise magnitude at each timestep
     # (this is the forward diffusion process)

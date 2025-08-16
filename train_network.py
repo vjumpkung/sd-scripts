@@ -804,6 +804,9 @@ class NetworkTrainer:
             ), "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
             accelerator.print("enable full bf16 training.")
             network.to(weight_dtype)
+            
+        if args.custom_timesteps:
+            accelerator.print(f"run custom timesteps with std={args.timesteps_std} tail_weight={args.timesteps_tail_weight} mean_t={args.timesteps_mean_t}")
 
         unet_weight_dtype = te_weight_dtype = weight_dtype
         # Experimental Feature: Put base model into fp8 to save vram
@@ -1874,6 +1877,29 @@ def setup_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Max number of validation dataset items processed. By default, validation will run the entire validation dataset / 処理される検証データセット項目の最大数。デフォルトでは、検証は検証データセット全体を実行します",
+    )
+    parser.add_argument(
+        "--custom_timesteps",
+        action="store_true",
+        help="custom timesteps should use with --timesteps_std --timesteps_tail_weight --timesteps_mean_t to customize",
+    )
+    parser.add_argument(
+        "--timesteps_std",
+        type=int,
+        default=100,
+        help="make mean_t wider like standard derivation",
+    )
+    parser.add_argument(
+        "--timesteps_tail_weight",
+        type=float,
+        default=0.2,
+        help="weight of unfocus timesteps will reduce to specific value 0.2 -> 20%",
+    )
+    parser.add_argument(
+        "--timesteps_mean_t",
+        type=int,
+        default=300,
+        help="weight of specific timesteps that will be focus",
     )
     return parser
 
