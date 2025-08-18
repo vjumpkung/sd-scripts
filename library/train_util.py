@@ -367,6 +367,7 @@ class BucketBatchIndex(NamedTuple):
     bucket_index: int
     bucket_batch_size: int
     batch_index: int
+    bucket_name: str = ""
 
 
 class AugHelper:
@@ -701,6 +702,7 @@ class BaseDataset(torch.utils.data.Dataset):
 
         self.enable_bucket = False
         self.bucket_manager: BucketManager = None  # not initialized
+        self.bucket_manager_dict: Dict[str, BucketManager] = {}  # for repeat bucket_manager
         self.min_bucket_reso = None
         self.max_bucket_reso = None
         self.bucket_reso_steps = None
@@ -1078,12 +1080,15 @@ class BaseDataset(torch.utils.data.Dataset):
         self.shuffle_buckets()
         self._length = len(self.buckets_indices)
 
-    def shuffle_buckets(self):
+    def shuffle_buckets(self, bucket_name: Optional[str] = None):
         # set random seed for this epoch
         random.seed(self.seed + self.current_epoch)
-
         random.shuffle(self.buckets_indices)
-        self.bucket_manager.shuffle()
+        
+        if self.bucket_manager_dict and bucket_name is not None:
+            self.bucket_manager_dict[bucket_name].shuffle()
+        else:
+            self.bucket_manager.shuffle()
 
     def verify_bucket_reso_steps(self, min_steps: int):
         assert self.bucket_reso_steps is None or self.bucket_reso_steps % min_steps == 0, (
@@ -1854,7 +1859,7 @@ class BaseDataset(torch.utils.data.Dataset):
 
 class DreamBoothDataset(BaseDataset):
     IMAGE_INFO_CACHE_FILE = "metadata_cache.json"
-
+    buckets_indices_dict = {}
     # The is_training_dataset defines the type of dataset, training or validation
     # if is_training_dataset is True -> training dataset
     # if is_training_dataset is False -> validation dataset
@@ -1875,6 +1880,7 @@ class DreamBoothDataset(BaseDataset):
         validation_split: float,
         validation_seed: Optional[int],
         resize_interpolation: Optional[str],
+        repeat_mode: Optional[bool],
     ) -> None:
         super().__init__(resolution, network_multiplier, debug_dataset, resize_interpolation)
 
@@ -1889,6 +1895,7 @@ class DreamBoothDataset(BaseDataset):
         self.validation_split = validation_split
 
         self.enable_bucket = enable_bucket
+        self.make_repeats_bucket = repeat_mode 
         if self.enable_bucket:
             min_bucket_reso, max_bucket_reso = self.adjust_min_max_bucket_reso_by_steps(
                 resolution, min_bucket_reso, max_bucket_reso, bucket_reso_steps
@@ -2140,8 +2147,469 @@ class DreamBoothDataset(BaseDataset):
                 first_loop = False
 
         self.num_reg_images = num_reg_images
+        
+    def make_buckets(self):
+        """
+        bucketingを行わない場合も呼び出し必須（ひとつだけbucketを作る）
+        min_size and max_size are ignored when enable_bucket is False
+        """
+        logger.info("loading image sizes.")
+        
+        
+        # for i in self.subsets:
+        #     for j in  self.image_data.values():
+        #         if i.image_dir in j.absolute_path:
+        #             print(f"subset: {i.image_dir}, image_data: {j.absolute_path}")
+        
+        for info in tqdm(self.image_data.values()):
+            if info.image_size is None:
+                info.image_size = self.get_image_size(info.absolute_path)
+                
+        # # run in parallel
+        # max_workers = min(os.cpu_count(), len(self.image_data))  # TODO consider multi-gpu (processes)
+        # with ThreadPoolExecutor(max_workers) as executor:
+        #     futures = []
+        #     for info in tqdm(self.image_data.values(), desc="loading image sizes"):
+        #         if info.image_size is None:
+        #             def get_and_set_image_size(info):
+        #                 info.image_size = self.get_image_size(info.absolute_path)
+        #             futures.append(executor.submit(get_and_set_image_size, info))
+        #             # consume futures to reduce memory usage and prevent Ctrl-C hang
+        #             if len(futures) >= max_workers:
+        #                 for future in futures:
+        #                     future.result()
+        #                 futures = []
+        #     for future in futures:
+        #         future.result()
+
+        if self.enable_bucket:
+            logger.info("make buckets")
+        else:
+            logger.info("prepare dataset")
+
+        self._length = 0
+
+        if self.enable_bucket and self.make_repeats_bucket:
+            counter = 0
+            self.buckets_indices: List[BucketBatchIndex] = []
+            for i in self.subsets:
+                # bucketを作成し、画像をbucketに振り分ける
+                bucket_name = f"{i.num_repeats}_{i.class_tokens}"
+                self.bucket_manager_dict[bucket_name] = None
+                if self.enable_bucket:
+                    if self.bucket_manager_dict[bucket_name] is None:  # fine tuningの場合でmetadataに定義がある場合は、すでに初期化済み
+                        self.bucket_manager_dict[bucket_name] = BucketManager(
+                            self.bucket_no_upscale,
+                            (self.width, self.height),
+                            self.min_bucket_reso,
+                            self.max_bucket_reso,
+                            self.bucket_reso_steps,
+                        )
+                        if not self.bucket_no_upscale:
+                            self.bucket_manager_dict[bucket_name].make_buckets()
+                        else:
+                            logger.warning(
+                                "min_bucket_reso and max_bucket_reso are ignored if bucket_no_upscale is set, because bucket reso is defined by image size automatically / bucket_no_upscaleが指定された場合は、bucketの解像度は画像サイズから自動計算されるため、min_bucket_resoとmax_bucket_resoは無視されます"
+                            )
+
+                    img_ar_errors = []
+                    for image_info in self.image_data.values():
+                        if i.image_dir in image_info.absolute_path:
+                            image_width, image_height = image_info.image_size
+                            image_info.bucket_reso, image_info.resized_size, ar_error = self.bucket_manager_dict[bucket_name].select_bucket(
+                                image_width, image_height
+                            )
+
+                            # logger.info(image_info.image_key, image_info.bucket_reso)
+                            img_ar_errors.append(abs(ar_error))
+
+                    self.bucket_manager_dict[bucket_name].sort()
+                else:
+                    self.bucket_manager_dict[bucket_name] = BucketManager(False, (self.width, self.height), None, None, None)
+                    self.bucket_manager_dict[bucket_name].set_predefined_resos([(self.width, self.height)])  # ひとつの固定サイズbucketのみ
+                    for image_info in self.image_data.values():
+                        if i.image_dir in image_info.absolute_path:
+                            image_width, image_height = image_info.image_size
+                            image_info.bucket_reso, image_info.resized_size, _ = self.bucket_manager_dict[bucket_name].select_bucket(image_width, image_height)
+
+                for image_info in self.image_data.values():
+                    for _ in range(image_info.num_repeats):
+                        if i.image_dir in image_info.absolute_path:
+                            self.bucket_manager_dict[bucket_name].add_image(image_info.bucket_reso, image_info.image_key)
+
+                # bucket情報を表示、格納する
+                if self.enable_bucket:
+                    self.bucket_info = {"buckets": {}}
+                    logger.info("number of images (including repeats) / 各bucketの画像枚数（繰り返し回数を含む）")
+                    for i, (reso, bucket) in enumerate(zip(self.bucket_manager_dict[bucket_name].resos, self.bucket_manager_dict[bucket_name].buckets)):
+                        count = len(bucket)
+                        if count > 0:
+                            self.bucket_info["buckets"][i] = {"resolution": reso, "count": len(bucket)}
+                            logger.info(f"bucket {bucket_name} {i}: resolution {reso}, count: {len(bucket)}")
+
+                    if len(img_ar_errors) == 0:
+                        mean_img_ar_error = 0  # avoid NaN
+                    else:
+                        img_ar_errors = np.array(img_ar_errors)
+                        mean_img_ar_error = np.mean(np.abs(img_ar_errors))
+                    self.bucket_info["mean_img_ar_error"] = mean_img_ar_error
+                    logger.info(f"mean ar error (without repeats): {mean_img_ar_error}")
+
+                # データ参照用indexを作る。このindexはdatasetのshuffleに用いられる
+                
+                for bucket_index, bucket in enumerate(self.bucket_manager_dict[bucket_name].buckets):
+                    batch_count = int(math.ceil(len(bucket) / self.batch_size))
+                    for batch_index in range(batch_count):
+                        self.buckets_indices.append(BucketBatchIndex(bucket_index, self.batch_size, batch_index, bucket_name=bucket_name))
+
+                        if self.buckets_indices_dict.get(bucket_name, None) is None:
+                            self.buckets_indices_dict[bucket_name] = []
+                        self.buckets_indices_dict[bucket_name].append(counter)
+                        
+                        counter += 1
 
 
+                self.shuffle_buckets(bucket_name)
+                self._length = len(self.buckets_indices)
+            logger.info(f"total number of big buckets: {len(self.bucket_manager_dict)}")
+            logger.info(f"total number of bucket indices: {self._length} / バケットのインデックスの総数: {self._length}")
+        
+        elif self.enable_bucket:
+            if self.bucket_manager is None:  # fine tuningの場合でmetadataに定義がある場合は、すでに初期化済み
+                self.bucket_manager = BucketManager(
+                    self.bucket_no_upscale,
+                    (self.width, self.height),
+                    self.min_bucket_reso,
+                    self.max_bucket_reso,
+                    self.bucket_reso_steps,
+                )
+                if not self.bucket_no_upscale:
+                    self.bucket_manager.make_buckets()
+                else:
+                    logger.warning(
+                        "min_bucket_reso and max_bucket_reso are ignored if bucket_no_upscale is set, because bucket reso is defined by image size automatically / bucket_no_upscaleが指定された場合は、bucketの解像度は画像サイズから自動計算されるため、min_bucket_resoとmax_bucket_resoは無視されます"
+                    )
+
+            img_ar_errors = []
+            for image_info in self.image_data.values():
+                image_width, image_height = image_info.image_size
+                image_info.bucket_reso, image_info.resized_size, ar_error = self.bucket_manager.select_bucket(
+                    image_width, image_height
+                )
+
+                img_ar_errors.append(abs(ar_error))
+
+            self.bucket_manager.sort()
+        else:
+            self.bucket_manager = BucketManager(False, (self.width, self.height), None, None, None)
+            self.bucket_manager.set_predefined_resos([(self.width, self.height)])  # ひとつの固定サイズbucketのみ
+            for image_info in self.image_data.values():
+                image_width, image_height = image_info.image_size
+                image_info.bucket_reso, image_info.resized_size, _ = self.bucket_manager.select_bucket(image_width, image_height)
+
+        if not self.make_repeats_bucket:
+            for image_info in self.image_data.values():
+                for _ in range(image_info.num_repeats):
+                    self.bucket_manager.add_image(image_info.bucket_reso, image_info.image_key)
+
+        # bucket情報を表示、格納する
+                
+        if self.enable_bucket and not self.make_repeats_bucket:
+            self.bucket_info = {"buckets": {}}
+            logger.info("number of images (including repeats) / 各bucketの画像枚数（繰り返し回数を含む）")
+            for i, (reso, bucket) in enumerate(zip(self.bucket_manager.resos, self.bucket_manager.buckets)):
+                count = len(bucket)
+                if count > 0:
+                    self.bucket_info["buckets"][i] = {"resolution": reso, "count": len(bucket)}
+                    logger.info(f"bucket {i}: resolution {reso}, count: {len(bucket)}")
+
+            if len(img_ar_errors) == 0:
+                mean_img_ar_error = 0  # avoid NaN
+            else:
+                img_ar_errors = np.array(img_ar_errors)
+                mean_img_ar_error = np.mean(np.abs(img_ar_errors))
+            self.bucket_info["mean_img_ar_error"] = mean_img_ar_error
+            logger.info(f"mean ar error (without repeats): {mean_img_ar_error}")
+
+        # データ参照用indexを作る。このindexはdatasetのshuffleに用いられる
+        if not self.make_repeats_bucket:
+            self.buckets_indices: List[BucketBatchIndex] = []
+            for bucket_index, bucket in enumerate(self.bucket_manager.buckets):
+                batch_count = int(math.ceil(len(bucket) / self.batch_size))
+                for batch_index in range(batch_count):
+                    self.buckets_indices.append(BucketBatchIndex(bucket_index, self.batch_size, batch_index))
+
+            self.shuffle_buckets()
+            self._length = len(self.buckets_indices)
+
+    def set_current_epoch(self, epoch):
+        if not self.current_epoch == epoch:  # epochが切り替わったらバケツをシャッフルする
+            if epoch > self.current_epoch:
+                logger.info("epoch is incremented. current_epoch: {}, epoch: {}".format(self.current_epoch, epoch))
+                num_epochs = epoch - self.current_epoch
+                for _ in range(num_epochs):
+                    self.current_epoch += 1
+                    
+                    if self.make_repeats_bucket:
+                        # make_repeats_bucketの場合は、バケツをシャッフルする
+                        logger.info(f"shuffle buckets for epoch {self.current_epoch}")
+                        for bucket_name in self.bucket_manager_dict.keys():
+                            self.shuffle_buckets(bucket_name)
+                    else:
+                        self.shuffle_buckets()
+                # self.current_epoch seem to be set to 0 again in the next epoch. it may be caused by skipped_dataloader?
+            else:
+                logger.warning("epoch is not incremented. current_epoch: {}, epoch: {}".format(self.current_epoch, epoch))
+                self.current_epoch = epoch
+
+    def __getitem__(self, index):
+        
+        if self.make_repeats_bucket:
+            
+            name = self.buckets_indices[index].bucket_name
+            
+            bucket = self.bucket_manager_dict[name].buckets[self.buckets_indices[index].bucket_index]
+            bucket_batch_size = self.buckets_indices[index].bucket_batch_size
+            image_index = self.buckets_indices[index].batch_index * bucket_batch_size
+            # logger.info(f"get item for bucket {name} index {index} batch_idx {self.buckets_indices[index].batch_index} bucket_idx {self.buckets_indices[index].bucket_index} image_index {image_index} bucket {bucket}")
+        else:
+            bucket = self.bucket_manager.buckets[self.buckets_indices[index].bucket_index]
+            bucket_batch_size = self.buckets_indices[index].bucket_batch_size
+            image_index = self.buckets_indices[index].batch_index * bucket_batch_size
+            # logger.info(f"get item for bucket - index {index} bucket {bucket}")
+
+        if self.caching_mode is not None:  # return batch for latents/text encoder outputs caching
+            return self.get_item_for_caching(bucket, bucket_batch_size, image_index)
+
+        loss_weights = []
+        captions = []
+        input_ids_list = []
+        latents_list = []
+        alpha_mask_list = []
+        images = []
+        original_sizes_hw = []
+        crop_top_lefts = []
+        target_sizes_hw = []
+        flippeds = []  # 変数名が微妙
+        text_encoder_outputs_list = []
+        custom_attributes = []
+
+        for image_key in bucket[image_index : image_index + bucket_batch_size]:
+            image_info = self.image_data[image_key]
+            subset = self.image_to_subset[image_key]
+
+            custom_attributes.append(subset.custom_attributes)
+
+            # in case of fine tuning, is_reg is always False
+            loss_weights.append(self.prior_loss_weight if image_info.is_reg else 1.0)
+
+            flipped = subset.flip_aug and random.random() < 0.5  # not flipped or flipped with 50% chance
+
+            # image/latentsを処理する
+            if image_info.latents is not None:  # cache_latents=Trueの場合
+                original_size = image_info.latents_original_size
+                crop_ltrb = image_info.latents_crop_ltrb  # calc values later if flipped
+                if not flipped:
+                    latents = image_info.latents
+                    alpha_mask = image_info.alpha_mask
+                else:
+                    latents = image_info.latents_flipped
+                    alpha_mask = None if image_info.alpha_mask is None else torch.flip(image_info.alpha_mask, [1])
+
+                image = None
+            elif image_info.latents_npz is not None:  # FineTuningDatasetまたはcache_latents_to_disk=Trueの場合
+                latents, original_size, crop_ltrb, flipped_latents, alpha_mask = (
+                    self.latents_caching_strategy.load_latents_from_disk(image_info.latents_npz, image_info.bucket_reso)
+                )
+                if flipped:
+                    latents = flipped_latents
+                    alpha_mask = None if alpha_mask is None else alpha_mask[:, ::-1].copy()  # copy to avoid negative stride problem
+                    del flipped_latents
+                latents = torch.FloatTensor(latents)
+                if alpha_mask is not None:
+                    alpha_mask = torch.FloatTensor(alpha_mask)
+
+                image = None
+            else:
+                # 画像を読み込み、必要ならcropする
+                img, face_cx, face_cy, face_w, face_h = self.load_image_with_face_info(
+                    subset, image_info.absolute_path, subset.alpha_mask
+                )
+                im_h, im_w = img.shape[0:2]
+
+                if self.enable_bucket:
+                    img, original_size, crop_ltrb = trim_and_resize_if_required(
+                        subset.random_crop, img, image_info.bucket_reso, image_info.resized_size, resize_interpolation=image_info.resize_interpolation
+                    )
+                else:
+                    if face_cx > 0:  # 顔位置情報あり
+                        img = self.crop_target(subset, img, face_cx, face_cy, face_w, face_h)
+                    elif im_h > self.height or im_w > self.width:
+                        assert (
+                            subset.random_crop
+                        ), f"image too large, but cropping and bucketing are disabled / 画像サイズが大きいのでface_crop_aug_rangeかrandom_crop、またはbucketを有効にしてください: {image_info.absolute_path}"
+                        if im_h > self.height:
+                            p = random.randint(0, im_h - self.height)
+                            img = img[p : p + self.height]
+                        if im_w > self.width:
+                            p = random.randint(0, im_w - self.width)
+                            img = img[:, p : p + self.width]
+
+                    im_h, im_w = img.shape[0:2]
+                    assert (
+                        im_h == self.height and im_w == self.width
+                    ), f"image size is small / 画像サイズが小さいようです: {image_info.absolute_path}"
+
+                    original_size = [im_w, im_h]
+                    crop_ltrb = (0, 0, 0, 0)
+
+                # augmentation
+                aug = self.aug_helper.get_augmentor(subset.color_aug)
+                if aug is not None:
+                    # augment RGB channels only
+                    img_rgb = img[:, :, :3]
+                    img_rgb = aug(image=img_rgb)["image"]
+                    img[:, :, :3] = img_rgb
+
+                if flipped:
+                    img = img[:, ::-1, :].copy()  # copy to avoid negative stride problem
+
+                if subset.alpha_mask:
+                    if img.shape[2] == 4:
+                        alpha_mask = img[:, :, 3]  # [H,W]
+                        alpha_mask = alpha_mask.astype(np.float32) / 255.0  # 0.0~1.0
+                        alpha_mask = torch.FloatTensor(alpha_mask)
+                    else:
+                        alpha_mask = torch.ones((img.shape[0], img.shape[1]), dtype=torch.float32)
+                else:
+                    alpha_mask = None
+
+                img = img[:, :, :3]  # remove alpha channel
+
+                latents = None
+                image = self.image_transforms(img)  # -1.0~1.0のtorch.Tensorになる
+                del img
+
+            images.append(image)
+            latents_list.append(latents)
+            alpha_mask_list.append(alpha_mask)
+
+            target_size = (image.shape[2], image.shape[1]) if image is not None else (latents.shape[2] * 8, latents.shape[1] * 8)
+
+            if not flipped:
+                crop_left_top = (crop_ltrb[0], crop_ltrb[1])
+            else:
+                # crop_ltrb[2] is right, so target_size[0] - crop_ltrb[2] is left in flipped image
+                crop_left_top = (target_size[0] - crop_ltrb[2], crop_ltrb[1])
+
+            original_sizes_hw.append((int(original_size[1]), int(original_size[0])))
+            crop_top_lefts.append((int(crop_left_top[1]), int(crop_left_top[0])))
+            target_sizes_hw.append((int(target_size[1]), int(target_size[0])))
+            flippeds.append(flipped)
+
+            # captionとtext encoder outputを処理する
+            caption = image_info.caption  # default
+
+            tokenization_required = (
+                self.text_encoder_output_caching_strategy is None or self.text_encoder_output_caching_strategy.is_partial
+            )
+            text_encoder_outputs = None
+            input_ids = None
+
+            if image_info.text_encoder_outputs is not None:
+                # cached
+                text_encoder_outputs = image_info.text_encoder_outputs
+            elif image_info.text_encoder_outputs_npz is not None:
+                # on disk
+                text_encoder_outputs = self.text_encoder_output_caching_strategy.load_outputs_npz(
+                    image_info.text_encoder_outputs_npz
+                )
+            else:
+                tokenization_required = True
+            text_encoder_outputs_list.append(text_encoder_outputs)
+
+            if tokenization_required:
+                caption = self.process_caption(subset, image_info.caption)
+                input_ids = [ids[0] for ids in self.tokenize_strategy.tokenize(caption)]  # remove batch dimension
+                # if self.XTI_layers:
+                #     caption_layer = []
+                #     for layer in self.XTI_layers:
+                #         token_strings_from = " ".join(self.token_strings)
+                #         token_strings_to = " ".join([f"{x}_{layer}" for x in self.token_strings])
+                #         caption_ = caption.replace(token_strings_from, token_strings_to)
+                #         caption_layer.append(caption_)
+                #     captions.append(caption_layer)
+                # else:
+                #     captions.append(caption)
+
+                # if not self.token_padding_disabled:  # this option might be omitted in future
+                #     # TODO get_input_ids must support SD3
+                #     if self.XTI_layers:
+                #         token_caption = self.get_input_ids(caption_layer, self.tokenizers[0])
+                #     else:
+                #         token_caption = self.get_input_ids(caption, self.tokenizers[0])
+                #     input_ids_list.append(token_caption)
+
+                #     if len(self.tokenizers) > 1:
+                #         if self.XTI_layers:
+                #             token_caption2 = self.get_input_ids(caption_layer, self.tokenizers[1])
+                #         else:
+                #             token_caption2 = self.get_input_ids(caption, self.tokenizers[1])
+                #         input_ids2_list.append(token_caption2)
+
+            input_ids_list.append(input_ids)
+            captions.append(caption)
+
+        def none_or_stack_elements(tensors_list, converter):
+            # [[clip_l, clip_g, t5xxl], [clip_l, clip_g, t5xxl], ...] -> [torch.stack(clip_l), torch.stack(clip_g), torch.stack(t5xxl)]
+            if len(tensors_list) == 0 or tensors_list[0] == None or len(tensors_list[0]) == 0 or tensors_list[0][0] is None:
+                return None
+            return [torch.stack([converter(x[i]) for x in tensors_list]) for i in range(len(tensors_list[0]))]
+
+        # set example
+        example = {}
+        example["custom_attributes"] = custom_attributes  # may be list of empty dict
+        example["loss_weights"] = torch.FloatTensor(loss_weights)
+        example["text_encoder_outputs_list"] = none_or_stack_elements(text_encoder_outputs_list, torch.FloatTensor)
+        example["input_ids_list"] = none_or_stack_elements(input_ids_list, lambda x: x)
+
+        # if one of alpha_masks is not None, we need to replace None with ones
+        none_or_not = [x is None for x in alpha_mask_list]
+        if all(none_or_not):
+            example["alpha_masks"] = None
+        elif any(none_or_not):
+            for i in range(len(alpha_mask_list)):
+                if alpha_mask_list[i] is None:
+                    if images[i] is not None:
+                        alpha_mask_list[i] = torch.ones((images[i].shape[1], images[i].shape[2]), dtype=torch.float32)
+                    else:
+                        alpha_mask_list[i] = torch.ones(
+                            (latents_list[i].shape[1] * 8, latents_list[i].shape[2] * 8), dtype=torch.float32
+                        )
+            example["alpha_masks"] = torch.stack(alpha_mask_list)
+        else:
+            example["alpha_masks"] = torch.stack(alpha_mask_list)
+
+        if images[0] is not None:
+            images = torch.stack(images)
+            images = images.to(memory_format=torch.contiguous_format).float()
+        else:
+            images = None
+        example["images"] = images
+
+        example["latents"] = torch.stack(latents_list) if latents_list[0] is not None else None
+        example["captions"] = captions
+
+        example["original_sizes_hw"] = torch.stack([torch.LongTensor(x) for x in original_sizes_hw])
+        example["crop_top_lefts"] = torch.stack([torch.LongTensor(x) for x in crop_top_lefts])
+        example["target_sizes_hw"] = torch.stack([torch.LongTensor(x) for x in target_sizes_hw])
+        example["flippeds"] = flippeds
+
+        example["network_multipliers"] = torch.FloatTensor([self.network_multiplier] * len(captions))
+
+        if self.debug_dataset:
+            example["image_keys"] = bucket[image_index : image_index + self.batch_size]
+        return example
 class FineTuningDataset(BaseDataset):
     def __init__(
         self,
@@ -3482,7 +3950,9 @@ def get_sai_model_spec(
     textual_inversion: bool,
     is_stable_diffusion_ckpt: Optional[bool] = None,  # None for TI and LoRA
     sd3: str = None,
-    flux: str = None,
+    flux: str = None, # "dev", "schnell" or "chroma"
+    lumina: str = None,
+    optional_metadata: dict[str, str] | None = None
 ):
     timestamp = time.time()
 
@@ -3498,6 +3968,34 @@ def get_sai_model_spec(
         timesteps = (min_time_step, max_time_step)
     else:
         timesteps = None
+
+    # Convert individual model parameters to model_config dict
+    # TODO: Update calls to this function to pass in the model config
+    model_config = {}
+    if sd3 is not None:
+        model_config["sd3"] = sd3
+    if flux is not None:
+        model_config["flux"] = flux
+    if lumina is not None:
+        model_config["lumina"] = lumina
+
+    # Extract metadata_* fields from args and merge with optional_metadata
+    extracted_metadata = {}
+    
+    # Extract all metadata_* attributes from args
+    for attr_name in dir(args):
+        if attr_name.startswith("metadata_") and not attr_name.startswith("metadata___"):
+            value = getattr(args, attr_name, None)
+            if value is not None:
+                # Remove metadata_ prefix and exclude already handled fields
+                field_name = attr_name[9:]  # len("metadata_") = 9
+                if field_name not in ["title", "author", "description", "license", "tags"]:
+                    extracted_metadata[field_name] = value
+    
+    # Merge extracted metadata with provided optional_metadata
+    all_optional_metadata = {**extracted_metadata}
+    if optional_metadata:
+        all_optional_metadata.update(optional_metadata)
 
     metadata = sai_model_spec.build_metadata(
         state_dict,
@@ -3516,10 +4014,73 @@ def get_sai_model_spec(
         tags=args.metadata_tags,
         timesteps=timesteps,
         clip_skip=args.clip_skip,  # None or int
-        sd3=sd3,
-        flux=flux,
+        model_config=model_config, 
+        optional_metadata=all_optional_metadata if all_optional_metadata else None,
     )
     return metadata
+
+
+def get_sai_model_spec_dataclass(
+    state_dict: dict,
+    args: argparse.Namespace,
+    sdxl: bool,
+    lora: bool,
+    textual_inversion: bool,
+    is_stable_diffusion_ckpt: Optional[bool] = None,
+    sd3: str = None,
+    flux: str = None,
+    lumina: str = None,
+    optional_metadata: dict[str, str] | None = None
+) -> sai_model_spec.ModelSpecMetadata:
+    """
+    Get ModelSpec metadata as a dataclass - preferred for new code.
+    Automatically extracts metadata_* fields from args.
+    """
+    timestamp = time.time()
+
+    v2 = args.v2
+    v_parameterization = args.v_parameterization
+    reso = args.resolution
+
+    title = args.metadata_title if args.metadata_title is not None else args.output_name
+
+    if args.min_timestep is not None or args.max_timestep is not None:
+        min_time_step = args.min_timestep if args.min_timestep is not None else 0
+        max_time_step = args.max_timestep if args.max_timestep is not None else 1000
+        timesteps = (min_time_step, max_time_step)
+    else:
+        timesteps = None
+
+    # Convert individual model parameters to model_config dict
+    model_config = {}
+    if sd3 is not None:
+        model_config["sd3"] = sd3
+    if flux is not None:
+        model_config["flux"] = flux
+    if lumina is not None:
+        model_config["lumina"] = lumina
+
+    # Use the dataclass function directly
+    return sai_model_spec.build_metadata_dataclass(
+        state_dict,
+        v2,
+        v_parameterization,
+        sdxl,
+        lora,
+        textual_inversion,
+        timestamp,
+        title=title,
+        reso=reso,
+        is_stable_diffusion_ckpt=is_stable_diffusion_ckpt,
+        author=args.metadata_author,
+        description=args.metadata_description,
+        license=args.metadata_license,
+        tags=args.metadata_tags,
+        timesteps=timesteps,
+        clip_skip=args.clip_skip,
+        model_config=model_config,
+        optional_metadata=optional_metadata,
+    )
 
 
 def add_sd_models_arguments(parser: argparse.ArgumentParser):
@@ -4101,39 +4662,6 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--output_config", action="store_true", help="output command line args to given .toml file / 引数を.tomlファイルに出力する"
     )
-
-    # SAI Model spec
-    parser.add_argument(
-        "--metadata_title",
-        type=str,
-        default=None,
-        help="title for model metadata (default is output_name) / メタデータに書き込まれるモデルタイトル、省略時はoutput_name",
-    )
-    parser.add_argument(
-        "--metadata_author",
-        type=str,
-        default=None,
-        help="author name for model metadata / メタデータに書き込まれるモデル作者名",
-    )
-    parser.add_argument(
-        "--metadata_description",
-        type=str,
-        default=None,
-        help="description for model metadata / メタデータに書き込まれるモデル説明",
-    )
-    parser.add_argument(
-        "--metadata_license",
-        type=str,
-        default=None,
-        help="license for model metadata / メタデータに書き込まれるモデルライセンス",
-    )
-    parser.add_argument(
-        "--metadata_tags",
-        type=str,
-        default=None,
-        help="tags for model metadata, separated by comma / メタデータに書き込まれるモデルタグ、カンマ区切り",
-    )
-
     if support_dreambooth:
         # DreamBooth training
         parser.add_argument(
@@ -4575,6 +5103,11 @@ def add_dataset_arguments(
         parser.add_argument(
             "--reg_data_dir", type=str, default=None, help="directory for regularization images / 正則化画像データのディレクトリ"
         )
+        parser.add_argument(
+            "--repeat_mode",
+            action="store_true",
+            help="seperate bucket by each subset (EXPERIMENTAL) / 各サブセットごとにbucketを分ける（実験的）",
+        )
 
     if support_caption:
         # caption dataset
@@ -4587,6 +5120,8 @@ def add_dataset_arguments(
             default=1,
             help="repeat dataset when training with captions / キャプションでの学習時にデータセットを繰り返す回数",
         )
+        
+    
 
 
 def add_sd_saving_arguments(parser: argparse.ArgumentParser):
@@ -5973,6 +6508,23 @@ def get_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: tor
     timesteps = timesteps.long().to(device)
     return timesteps
 
+def get_custom_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: torch.device, std: int = 100, tail_weight: float = 0.2, mean_t: int = 300) -> torch.Tensor:
+    gauss = torch.normal(mean_t, std, size=(b_size,), device=device)
+    mask = (gauss < min_timestep) | (gauss >= max_timestep)
+    
+    while mask.any():
+        gauss[mask] = torch.normal(mean_t, std, size=(mask.sum(),), device=device)
+        mask = (gauss < min_timestep) | (gauss >= max_timestep)
+
+    # Uniform tail
+    uniform = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
+
+    # mix
+    mix_mask = torch.rand(b_size, device=device) < tail_weight
+    timesteps = torch.where(mix_mask, uniform, gauss).long()
+
+    return timesteps
+
 
 def get_noise_noisy_latents_and_timesteps(
     args, noise_scheduler, latents: torch.FloatTensor
@@ -5995,7 +6547,14 @@ def get_noise_noisy_latents_and_timesteps(
     min_timestep = 0 if args.min_timestep is None else args.min_timestep
     max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
 
-    timesteps = get_timesteps(min_timestep, max_timestep, b_size, latents.device)
+    if args.custom_timesteps:
+        timesteps = get_custom_timesteps(min_timestep, max_timestep, 
+                                         b_size, latents.device, 
+                                         args.timesteps_std, 
+                                         args.timesteps_tail_weight, 
+                                         args.timesteps_mean_t)
+    else:    
+        timesteps = get_timesteps(min_timestep, max_timestep, b_size, latents.device)
 
     # Add noise to the latents according to the noise magnitude at each timestep
     # (this is the forward diffusion process)
@@ -6007,6 +6566,9 @@ def get_noise_noisy_latents_and_timesteps(
         noisy_latents = noise_scheduler.add_noise(latents, noise + strength * torch.randn_like(latents), timesteps)
     else:
         noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+
+    # This moves the alphas_cumprod back to the CPU after it is moved in noise_scheduler.add_noise
+    noise_scheduler.alphas_cumprod = noise_scheduler.alphas_cumprod.cpu()
 
     return noise, noisy_latents, timesteps
 
@@ -6022,7 +6584,7 @@ def get_huber_threshold_if_needed(args, timesteps: torch.Tensor, noise_scheduler
     elif args.huber_schedule == "snr":
         if not hasattr(noise_scheduler, "alphas_cumprod"):
             raise NotImplementedError("Huber schedule 'snr' is not supported with the current model.")
-        alphas_cumprod = torch.index_select(noise_scheduler.alphas_cumprod, 0, timesteps.cpu())
+        alphas_cumprod = torch.index_select(noise_scheduler.alphas_cumprod, 0, timesteps.to(noise_scheduler.alphas_cumprod.device)) 
         sigmas = ((1.0 - alphas_cumprod) / alphas_cumprod) ** 0.5
         result = (1 - args.huber_c) / (1 + sigmas) ** 2 + args.huber_c
         result = result.to(timesteps.device)
@@ -6205,6 +6767,17 @@ def line_to_prompt_dict(line: str) -> dict:
             if m:
                 prompt_dict["controlnet_image"] = m.group(1)
                 continue
+
+            m = re.match(r"ctr (.+)", parg, re.IGNORECASE)
+            if m:
+                prompt_dict["cfg_trunc_ratio"] = float(m.group(1))
+                continue
+
+            m = re.match(r"rcfg (.+)", parg, re.IGNORECASE)
+            if m:
+                prompt_dict["renorm_cfg"] = float(m.group(1))
+                continue
+
 
         except ValueError as ex:
             logger.error(f"Exception in parsing / 解析エラー: {parg}")
