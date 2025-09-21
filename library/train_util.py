@@ -684,7 +684,7 @@ class BaseDataset(torch.utils.data.Dataset):
         resolution: Optional[Tuple[int, int]],
         network_multiplier: float,
         debug_dataset: bool,
-        resize_interpolation: Optional[str] = None
+        resize_interpolation: Optional[str] = None,
     ) -> None:
         super().__init__()
 
@@ -721,7 +721,9 @@ class BaseDataset(torch.utils.data.Dataset):
         self.image_transforms = IMAGE_TRANSFORMS
 
         if resize_interpolation is not None:
-            assert validate_interpolation_fn(resize_interpolation), f"Resize interpolation \"{resize_interpolation}\" is not a valid interpolation"
+            assert validate_interpolation_fn(
+                resize_interpolation
+            ), f'Resize interpolation "{resize_interpolation}" is not a valid interpolation'
         self.resize_interpolation = resize_interpolation
 
         self.image_data: Dict[str, ImageInfo] = {}
@@ -1618,7 +1620,11 @@ class BaseDataset(torch.utils.data.Dataset):
 
                 if self.enable_bucket:
                     img, original_size, crop_ltrb = trim_and_resize_if_required(
-                        subset.random_crop, img, image_info.bucket_reso, image_info.resized_size, resize_interpolation=image_info.resize_interpolation
+                        subset.random_crop,
+                        img,
+                        image_info.bucket_reso,
+                        image_info.resized_size,
+                        resize_interpolation=image_info.resize_interpolation,
                     )
                 else:
                     if face_cx > 0:  # 顔位置情報あり
@@ -2108,7 +2114,9 @@ class DreamBoothDataset(BaseDataset):
 
             for img_path, caption, size in zip(img_paths, captions, sizes):
                 info = ImageInfo(img_path, num_repeats, caption, subset.is_reg, img_path)
-                info.resize_interpolation = subset.resize_interpolation if subset.resize_interpolation is not None else self.resize_interpolation
+                info.resize_interpolation = (
+                    subset.resize_interpolation if subset.resize_interpolation is not None else self.resize_interpolation
+                )
                 if size is not None:
                     info.image_size = size
                 if subset.is_reg:
@@ -2853,7 +2861,7 @@ class ControlNetDataset(BaseDataset):
         bucket_no_upscale: bool,
         debug_dataset: bool,
         validation_split: float,
-        validation_seed: Optional[int],        
+        validation_seed: Optional[int],
         resize_interpolation: Optional[str] = None,
     ) -> None:
         super().__init__(resolution, network_multiplier, debug_dataset, resize_interpolation)
@@ -2916,7 +2924,7 @@ class ControlNetDataset(BaseDataset):
         self.num_train_images = self.dreambooth_dataset_delegate.num_train_images
         self.num_reg_images = self.dreambooth_dataset_delegate.num_reg_images
         self.validation_split = validation_split
-        self.validation_seed = validation_seed 
+        self.validation_seed = validation_seed
         self.resize_interpolation = resize_interpolation
 
         # assert all conditioning data exists
@@ -3006,7 +3014,14 @@ class ControlNetDataset(BaseDataset):
                     cond_img.shape[0] == original_size_hw[0] and cond_img.shape[1] == original_size_hw[1]
                 ), f"size of conditioning image is not match / 画像サイズが合いません: {image_info.absolute_path}"
 
-                cond_img = resize_image(cond_img, original_size_hw[1], original_size_hw[0], target_size_hw[1], target_size_hw[0], self.resize_interpolation)
+                cond_img = resize_image(
+                    cond_img,
+                    original_size_hw[1],
+                    original_size_hw[0],
+                    target_size_hw[1],
+                    target_size_hw[0],
+                    self.resize_interpolation,
+                )
 
                 # TODO support random crop
                 # 現在サポートしているcropはrandomではなく中央のみ
@@ -3020,7 +3035,14 @@ class ControlNetDataset(BaseDataset):
                 # ), f"image size is small / 画像サイズが小さいようです: {image_info.absolute_path}"
                 # resize to target
                 if cond_img.shape[0] != target_size_hw[0] or cond_img.shape[1] != target_size_hw[1]:
-                    cond_img = resize_image(cond_img, cond_img.shape[0], cond_img.shape[1], target_size_hw[1], target_size_hw[0], self.resize_interpolation)
+                    cond_img = resize_image(
+                        cond_img,
+                        cond_img.shape[0],
+                        cond_img.shape[1],
+                        target_size_hw[1],
+                        target_size_hw[0],
+                        self.resize_interpolation,
+                    )
 
             if flipped:
                 cond_img = cond_img[:, ::-1, :].copy()  # copy to avoid negative stride
@@ -3468,7 +3490,9 @@ def load_images_and_masks_for_caching(
     for info in image_infos:
         image = load_image(info.absolute_path, use_alpha_mask) if info.image is None else np.array(info.image, np.uint8)
         # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
-        image, original_size, crop_ltrb = trim_and_resize_if_required(random_crop, image, info.bucket_reso, info.resized_size, resize_interpolation=info.resize_interpolation)
+        image, original_size, crop_ltrb = trim_and_resize_if_required(
+            random_crop, image, info.bucket_reso, info.resized_size, resize_interpolation=info.resize_interpolation
+        )
 
         original_sizes.append(original_size)
         crop_ltrbs.append(crop_ltrb)
@@ -3509,7 +3533,9 @@ def cache_batch_latents(
     for info in image_infos:
         image = load_image(info.absolute_path, use_alpha_mask) if info.image is None else np.array(info.image, np.uint8)
         # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
-        image, original_size, crop_ltrb = trim_and_resize_if_required(random_crop, image, info.bucket_reso, info.resized_size, resize_interpolation=info.resize_interpolation)
+        image, original_size, crop_ltrb = trim_and_resize_if_required(
+            random_crop, image, info.bucket_reso, info.resized_size, resize_interpolation=info.resize_interpolation
+        )
 
         info.latents_original_size = original_size
         info.latents_crop_ltrb = crop_ltrb
@@ -3950,9 +3976,9 @@ def get_sai_model_spec(
     textual_inversion: bool,
     is_stable_diffusion_ckpt: Optional[bool] = None,  # None for TI and LoRA
     sd3: str = None,
-    flux: str = None, # "dev", "schnell" or "chroma"
+    flux: str = None,  # "dev", "schnell" or "chroma"
     lumina: str = None,
-    optional_metadata: dict[str, str] | None = None
+    optional_metadata: dict[str, str] | None = None,
 ):
     timestamp = time.time()
 
@@ -3981,7 +4007,7 @@ def get_sai_model_spec(
 
     # Extract metadata_* fields from args and merge with optional_metadata
     extracted_metadata = {}
-    
+
     # Extract all metadata_* attributes from args
     for attr_name in dir(args):
         if attr_name.startswith("metadata_") and not attr_name.startswith("metadata___"):
@@ -3991,7 +4017,7 @@ def get_sai_model_spec(
                 field_name = attr_name[9:]  # len("metadata_") = 9
                 if field_name not in ["title", "author", "description", "license", "tags"]:
                     extracted_metadata[field_name] = value
-    
+
     # Merge extracted metadata with provided optional_metadata
     all_optional_metadata = {**extracted_metadata}
     if optional_metadata:
@@ -4014,7 +4040,7 @@ def get_sai_model_spec(
         tags=args.metadata_tags,
         timesteps=timesteps,
         clip_skip=args.clip_skip,  # None or int
-        model_config=model_config, 
+        model_config=model_config,
         optional_metadata=all_optional_metadata if all_optional_metadata else None,
     )
     return metadata
@@ -4030,7 +4056,7 @@ def get_sai_model_spec_dataclass(
     sd3: str = None,
     flux: str = None,
     lumina: str = None,
-    optional_metadata: dict[str, str] | None = None
+    optional_metadata: dict[str, str] | None = None,
 ) -> sai_model_spec.ModelSpecMetadata:
     """
     Get ModelSpec metadata as a dataclass - preferred for new code.
@@ -6033,11 +6059,12 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
 
 
 def patch_accelerator_for_fp16_training(accelerator):
-    
+
     from accelerate import DistributedType
+
     if accelerator.distributed_type == DistributedType.DEEPSPEED:
         return
-    
+
     org_unscale_grads = accelerator.scaler._unscale_grads_
 
     def _unscale_grads_replacer(optimizer, inv_scale, found_inf, allow_fp16):
@@ -6779,7 +6806,6 @@ def line_to_prompt_dict(line: str) -> dict:
                 prompt_dict["renorm_cfg"] = float(m.group(1))
                 continue
 
-
         except ValueError as ex:
             logger.error(f"Exception in parsing / 解析エラー: {parg}")
             logger.error(ex)
@@ -6828,7 +6854,7 @@ def sample_images_common(
     vae,
     tokenizer,
     text_encoder,
-    unet,
+    unet_wrapped,
     prompt_replacement=None,
     controlnet=None,
 ):
@@ -6863,7 +6889,7 @@ def sample_images_common(
     vae.to(distributed_state.device)  # distributed_state.device is same as accelerator.device
 
     # unwrap unet and text_encoder(s)
-    unet = accelerator.unwrap_model(unet)
+    unet = accelerator.unwrap_model(unet_wrapped)
     if isinstance(text_encoder, (list, tuple)):
         text_encoder = [accelerator.unwrap_model(te) for te in text_encoder]
     else:
@@ -7009,7 +7035,7 @@ def sample_image_inference(
     logger.info(f"sample_sampler: {sampler_name}")
     if seed is not None:
         logger.info(f"seed: {seed}")
-    with accelerator.autocast():
+    with accelerator.autocast(), torch.no_grad():
         latents = pipeline(
             prompt=prompt,
             height=height,
@@ -7147,4 +7173,3 @@ class LossRecorder:
         if losses == 0:
             return 0
         return self.loss_total / losses
-
