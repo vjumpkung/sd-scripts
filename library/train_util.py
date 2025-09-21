@@ -6508,23 +6508,21 @@ def get_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: tor
     timesteps = timesteps.long().to(device)
     return timesteps
 
-def get_custom_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: torch.device, std: int = 100, tail_weight: float = 0.2, mean_t: int = 300) -> torch.Tensor:
-    gauss = torch.normal(mean_t, std, size=(b_size,), device=device)
-    mask = (gauss < min_timestep) | (gauss >= max_timestep)
-    
-    while mask.any():
-        gauss[mask] = torch.normal(mean_t, std, size=(mask.sum(),), device=device)
-        mask = (gauss < min_timestep) | (gauss >= max_timestep)
+def get_custom_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: torch.device, mean_t: float = 600, left_sigma: float = 300, right_sigma: float = 200, low_boost_range=(50,250), low_boost_factor=1):       
+    t = np.arange(min_timestep, max_timestep + 1)
 
-    # Uniform tail
-    uniform = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
+    w_left  = np.exp(-0.5 * ((t[t<=mean_t]-mean_t)/left_sigma)**2)
+    w_right = np.exp(-0.5 * ((t[t> mean_t]-mean_t)/right_sigma)**2)
+    w = np.concatenate([w_left, w_right])
 
-    # mix
-    mix_mask = torch.rand(b_size, device=device) < tail_weight
-    timesteps = torch.where(mix_mask, uniform, gauss).long()
+    boost_mask = (t >= low_boost_range[0]) & (t <= low_boost_range[1])
+    w[boost_mask] *= low_boost_factor
 
-    return timesteps
+    w = np.clip(w, 1e-6, None)
+    w /= w.sum()
 
+    timesteps = np.random.choice(t, size=b_size, p=w)
+    return torch.tensor(timesteps, device=device)
 
 def get_noise_noisy_latents_and_timesteps(
     args, noise_scheduler, latents: torch.FloatTensor
@@ -6548,11 +6546,14 @@ def get_noise_noisy_latents_and_timesteps(
     max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
 
     if args.custom_timesteps:
-        timesteps = get_custom_timesteps(min_timestep, max_timestep, 
-                                         b_size, latents.device, 
-                                         args.timesteps_std, 
-                                         args.timesteps_tail_weight, 
-                                         args.timesteps_mean_t)
+        timesteps = get_custom_timesteps(min_timestep, 
+                                         max_timestep, 
+                                         b_size, latents.device,
+                                         mean_t=args.timesteps_mean_t,
+                                         left_sigma=args.timesteps_left_sigma,
+                                         right_sigma=args.timesteps_right_sigma,
+                                         low_boost_range=(args.timesteps_low_boost_range_start, args.timesteps_low_boost_range_end),
+                                         low_boost_factor=args.timesteps_low_boost_factor)
     else:    
         timesteps = get_timesteps(min_timestep, max_timestep, b_size, latents.device)
 
