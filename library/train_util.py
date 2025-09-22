@@ -6536,7 +6536,7 @@ def get_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: tor
     return timesteps
 
 def get_custom_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: torch.device, mean_t: float = 600, left_sigma: float = 300, right_sigma: float = 200, low_boost_range=(50,250), low_boost_factor=1):       
-    t = np.arange(min_timestep, max_timestep + 1)
+    t = np.arange(min_timestep, max_timestep)
 
     w_left  = np.exp(-0.5 * ((t[t<=mean_t]-mean_t)/left_sigma)**2)
     w_right = np.exp(-0.5 * ((t[t> mean_t]-mean_t)/right_sigma)**2)
