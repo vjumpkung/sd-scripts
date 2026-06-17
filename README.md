@@ -29,6 +29,35 @@
 
 </details>
 
+## About This Fork (vjumpkung)
+
+This fork adds the following features on top of upstream `sd-scripts` (SD1.5 / SDXL LoRA training via `train_network.py` / `sdxl_train_network.py`):
+
+- **Separate learning rate for SDXL CLIP-L (TE1) and CLIP-G (TE2).** Pass two values to `--text_encoder_lr`:
+  ```bash
+  --text_encoder_lr 5e-5 1e-5
+  ```
+  ```toml
+  text_encoder_lr = ["5e-5", "1e-5"]
+  ```
+- **Train CLIP-L only (skip CLIP-G) for SDXL.** Add the network arg `clip_l_only`:
+  ```bash
+  --network_args "clip_l_only=true"
+  ```
+  ```toml
+  network_args = ["clip_l_only=true"]
+  ```
+- **Block-wise learning rate ("block weight") for SDXL/SD1.5 LoRA** via the standard `down_lr_weight` / `mid_lr_weight` / `up_lr_weight` network args.
+- **LoRA-GGPO (Gradient-Guided Perturbation Optimization)** ported from FLUX.1 to SD1.5 and SDXL:
+  ```bash
+  --network_args "ggpo_sigma=0.03" "ggpo_beta=0.01"
+  ```
+  ```toml
+  network_args = ["ggpo_sigma=0.03", "ggpo_beta=0.01"]
+  ```
+- **DreamBooth folder-based bucket resolution (EXPERIMENTAL)** — buckets are separated per subset so each step draws from the same concept. Enable with `--repeat_mode`.
+- **Custom timestep sampling distribution (EXPERIMENTAL)** — sample training timesteps from a configurable two-sided Gaussian with an optional low-timestep boost, instead of uniform sampling. Enable with `--custom_timesteps`; tune with `--timesteps_mean_t`, `--timesteps_left_sigma`, `--timesteps_right_sigma`, `--timesteps_low_boost_range_start`, `--timesteps_low_boost_range_end`, and `--timesteps_low_boost_factor`.
+
 ## Introduction
 
 This repository contains training, generation and utility scripts for Stable Diffusion and other image generation models.

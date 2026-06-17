@@ -189,6 +189,7 @@ from library.checkpoint_io import (  # noqa: F401, E402
 # New code should import from library.loss directly.
 from library.loss import (  # noqa: F401, E402
     get_timesteps,
+    get_custom_timesteps,
     get_noise_noisy_latents_and_timesteps,
     get_huber_threshold_if_needed,
     conditional_loss,

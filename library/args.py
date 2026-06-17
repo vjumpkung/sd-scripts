@@ -1090,6 +1090,11 @@ def add_dataset_arguments(
         parser.add_argument(
             "--reg_data_dir", type=str, default=None, help="directory for regularization images / 正則化画像データのディレクトリ"
         )
+        parser.add_argument(
+            "--repeat_mode",
+            action="store_true",
+            help="separate bucket by each subset (EXPERIMENTAL) / 各サブセットごとにbucketを分ける（実験的）",
+        )
 
     if support_caption:
         # caption dataset

@@ -13,6 +13,7 @@ import torch
 import re
 from library.utils import setup_logging
 from library.sdxl_original_unet import SdxlUNet2DConditionModel
+from torch import Tensor
 
 setup_logging()
 import logging
@@ -37,6 +38,8 @@ class LoRAModule(torch.nn.Module):
         dropout=None,
         rank_dropout=None,
         module_dropout=None,
+        ggpo_beta: Optional[float] = None,
+        ggpo_sigma: Optional[float] = None,
     ):
         """if alpha == 0 or None, alpha is rank (no scaling)."""
         super().__init__()
@@ -82,6 +85,16 @@ class LoRAModule(torch.nn.Module):
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
 
+        self.ggpo_sigma = ggpo_sigma
+        self.ggpo_beta = ggpo_beta
+
+        if self.ggpo_beta is not None and self.ggpo_sigma is not None:
+            self.combined_weight_norms = None
+            self.grad_norms = None
+            self.perturbation_norm_factor = 1.0 / math.sqrt(org_module.weight.shape[0])
+            self.initialize_norm_cache(org_module.weight)
+            self.org_module_shape: tuple[int] = org_module.weight.shape
+
     def apply_to(self):
         self.org_forward = self.org_module.forward
         self.org_module.forward = self.forward
@@ -118,7 +131,134 @@ class LoRAModule(torch.nn.Module):
 
         lx = self.lora_up(lx)
 
-        return org_forwarded + lx * self.multiplier * scale
+        # LoRA Gradient-Guided Perturbation Optimization
+        if (
+            self.training
+            and self.ggpo_sigma is not None
+            and self.ggpo_beta is not None
+            and self.combined_weight_norms is not None
+            and self.grad_norms is not None
+        ):
+            with torch.no_grad():
+                perturbation_scale = (self.ggpo_sigma * torch.sqrt(self.combined_weight_norms**2)) + (
+                    self.ggpo_beta * (self.grad_norms**2)
+                )
+                perturbation_scale_factor = (perturbation_scale * self.perturbation_norm_factor).to(self.device)
+                perturbation = torch.randn(self.org_module_shape, dtype=self.dtype, device=self.device)
+                perturbation.mul_(perturbation_scale_factor)
+                perturbation_output = x @ perturbation.T  # Result: (batch × n)
+            return org_forwarded + (self.multiplier * scale * lx) + perturbation_output
+        else:
+            return org_forwarded + lx * self.multiplier * scale
+
+    @torch.no_grad()
+    def initialize_norm_cache(self, org_module_weight: Tensor):
+        # Choose a reasonable sample size
+        n_rows = org_module_weight.shape[0]
+        sample_size = min(1000, n_rows)  # Cap at 1000 samples or use all if smaller
+
+        # Sample random indices across all rows
+        indices = torch.randperm(n_rows)[:sample_size]
+
+        # Convert to a supported data type first, then index
+        # Use float32 for indexing operations
+        weights_float32 = org_module_weight.to(dtype=torch.float32)
+        sampled_weights = weights_float32[indices].to(device=self.device)
+
+        # Calculate sampled norms
+        sampled_norms = torch.norm(sampled_weights, dim=1, keepdim=True)
+
+        # Store the mean norm as our estimate
+        self.org_weight_norm_estimate = sampled_norms.mean()
+
+        # Optional: store standard deviation for confidence intervals
+        self.org_weight_norm_std = sampled_norms.std()
+
+        # Free memory
+        del sampled_weights, weights_float32
+
+    @torch.no_grad()
+    def validate_norm_approximation(self, org_module_weight: Tensor, verbose=True):
+        # Calculate the true norm (this will be slow but it's just for validation)
+        true_norms = []
+        chunk_size = 1024  # Process in chunks to avoid OOM
+
+        for i in range(0, org_module_weight.shape[0], chunk_size):
+            end_idx = min(i + chunk_size, org_module_weight.shape[0])
+            chunk = org_module_weight[i:end_idx].to(device=self.device, dtype=self.dtype)
+            chunk_norms = torch.norm(chunk, dim=1, keepdim=True)
+            true_norms.append(chunk_norms.cpu())
+            del chunk
+
+        true_norms = torch.cat(true_norms, dim=0)
+        true_mean_norm = true_norms.mean().item()
+
+        # Compare with our estimate
+        estimated_norm = self.org_weight_norm_estimate.item()
+
+        # Calculate error metrics
+        absolute_error = abs(true_mean_norm - estimated_norm)
+        relative_error = absolute_error / true_mean_norm * 100  # as percentage
+
+        if verbose:
+            logger.info(f"True mean norm: {true_mean_norm:.6f}")
+            logger.info(f"Estimated norm: {estimated_norm:.6f}")
+            logger.info(f"Absolute error: {absolute_error:.6f}")
+            logger.info(f"Relative error: {relative_error:.2f}%")
+
+        return {
+            "true_mean_norm": true_mean_norm,
+            "estimated_norm": estimated_norm,
+            "absolute_error": absolute_error,
+            "relative_error": relative_error,
+        }
+
+    @torch.no_grad()
+    def update_norms(self):
+        # Not running GGPO so not currently running update norms
+        if self.ggpo_beta is None or self.ggpo_sigma is None:
+            return
+
+        # only update norms when we are training
+        if self.training is False:
+            return
+
+        module_weights = self.lora_up.weight @ self.lora_down.weight
+        module_weights.mul(self.scale)
+
+        self.weight_norms = torch.norm(module_weights, dim=1, keepdim=True)
+        self.combined_weight_norms = torch.sqrt(
+            (self.org_weight_norm_estimate**2) + torch.sum(module_weights**2, dim=1, keepdim=True)
+        )
+
+    @torch.no_grad()
+    def update_grad_norms(self):
+        if self.training is False:
+            print(f"skipping update_grad_norms for {self.lora_name}")
+            return
+
+        lora_down_grad = None
+        lora_up_grad = None
+
+        for name, param in self.named_parameters():
+            if name == "lora_down.weight":
+                lora_down_grad = param.grad
+            elif name == "lora_up.weight":
+                lora_up_grad = param.grad
+
+        # Calculate gradient norms if we have both gradients
+        if lora_down_grad is not None and lora_up_grad is not None:
+            with torch.autocast(self.device.type):
+                approx_grad = self.scale * ((self.lora_up.weight @ lora_down_grad) + (lora_up_grad @ self.lora_down.weight))
+                self.grad_norms = torch.norm(approx_grad, dim=1, keepdim=True)
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    @property
+    def dtype(self):
+        return next(self.parameters()).dtype
 
 
 class LoRAInfModule(LoRAModule):
@@ -445,6 +585,9 @@ def create_network(
     block_dims = kwargs.get("block_dims", None)
     block_lr_weight = parse_block_lr_kwargs(is_sdxl, kwargs)
 
+    # clip-l only
+    clip_l_only = kwargs.get("clip_l_only", False)
+
     # 以上のいずれかに指定があればblockごとのdim(rank)を有効にする
     if block_dims is not None or block_lr_weight is not None:
         block_alphas = kwargs.get("block_alphas", None)
@@ -473,6 +616,15 @@ def create_network(
     if module_dropout is not None:
         module_dropout = float(module_dropout)
 
+    ggpo_beta = kwargs.get("ggpo_beta", None)
+    ggpo_sigma = kwargs.get("ggpo_sigma", None)
+
+    if ggpo_beta is not None:
+        ggpo_beta = float(ggpo_beta)
+
+    if ggpo_sigma is not None:
+        ggpo_sigma = float(ggpo_sigma)
+
     # すごく引数が多いな ( ^ω^)･･･
     network = LoRANetwork(
         text_encoder,
@@ -491,6 +643,9 @@ def create_network(
         conv_block_alphas=conv_block_alphas,
         varbose=True,
         is_sdxl=is_sdxl,
+        train_clip_l_only=clip_l_only,
+        ggpo_beta=ggpo_beta,
+        ggpo_sigma=ggpo_sigma,
     )
 
     loraplus_lr_ratio = kwargs.get("loraplus_lr_ratio", None)
@@ -895,6 +1050,9 @@ class LoRANetwork(torch.nn.Module):
         module_class: Type[object] = LoRAModule,
         varbose: Optional[bool] = False,
         is_sdxl: Optional[bool] = False,
+        train_clip_l_only: Optional[bool] = False,
+        ggpo_beta: Optional[float] = None,
+        ggpo_sigma: Optional[float] = None,
     ) -> None:
         """
         LoRA network: すごく引数が多いが、パターンは以下の通り
@@ -940,6 +1098,9 @@ class LoRANetwork(torch.nn.Module):
                 logger.info(
                     f"apply LoRA to Conv2d with kernel size (3,3). dim (rank): {self.conv_lora_dim}, alpha: {self.conv_alpha}"
                 )
+
+        if ggpo_beta is not None and ggpo_sigma is not None:
+            logger.info(f"LoRA-GGPO training sigma: {ggpo_sigma} beta: {ggpo_beta}")
 
         # create module instances
         def create_modules(
@@ -1011,6 +1172,8 @@ class LoRANetwork(torch.nn.Module):
                                 dropout=dropout,
                                 rank_dropout=rank_dropout,
                                 module_dropout=module_dropout,
+                                ggpo_beta=ggpo_beta,
+                                ggpo_sigma=ggpo_sigma,
                             )
                             loras.append(lora)
             return loras, skipped
@@ -1022,6 +1185,9 @@ class LoRANetwork(torch.nn.Module):
         self.text_encoder_loras = []
         skipped_te = []
         for i, text_encoder in enumerate(text_encoders):
+            if i == 1 and train_clip_l_only:
+                logger.info(f"skip CLIP-G training")
+                break
             if len(text_encoders) > 1:
                 index = i + 1
                 logger.info(f"create LoRA for Text Encoder {index}:")
@@ -1144,6 +1310,115 @@ class LoRANetwork(torch.nn.Module):
         logger.info(f"LoRA+ UNet LR Ratio: {self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio}")
         logger.info(f"LoRA+ Text Encoder LR Ratio: {self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio}")
 
+    def prepare_optimizer_params_with_multiple_te_lrs(self, text_encoder_lr, unet_lr, default_lr):
+        # for sdxl have only two LR
+        if text_encoder_lr is None or (isinstance(text_encoder_lr, list) and len(text_encoder_lr) == 0):
+            text_encoder_lr = [default_lr, default_lr]
+        elif isinstance(text_encoder_lr, float) or isinstance(text_encoder_lr, int):
+            text_encoder_lr = [float(text_encoder_lr), float(text_encoder_lr)]
+        elif len(text_encoder_lr) == 1:
+            text_encoder_lr = [text_encoder_lr[0], text_encoder_lr[0]]
+        elif len(text_encoder_lr) == 2:
+            text_encoder_lr = [text_encoder_lr[0], text_encoder_lr[1]]
+
+        self.requires_grad_(True)
+
+        all_params = []
+        lr_descriptions = []
+
+        def assemble_params(loras, lr, loraplus_ratio):
+            param_groups = {"lora": {}, "plus": {}}
+            for lora in loras:
+                for name, param in lora.named_parameters():
+                    if loraplus_ratio is not None and "lora_up" in name:
+                        param_groups["plus"][f"{lora.lora_name}.{name}"] = param
+                    else:
+                        param_groups["lora"][f"{lora.lora_name}.{name}"] = param
+
+            params = []
+            descriptions = []
+            for key in param_groups.keys():
+                param_data = {"params": param_groups[key].values()}
+
+                if len(param_data["params"]) == 0:
+                    continue
+
+                if lr is not None:
+                    if key == "plus":
+                        param_data["lr"] = lr * loraplus_ratio
+                    else:
+                        param_data["lr"] = lr
+
+                if param_data.get("lr", None) == 0 or param_data.get("lr", None) is None:
+                    logger.info("NO LR skipping!")
+                    continue
+
+                params.append(param_data)
+                descriptions.append("plus" if key == "plus" else "")
+
+            return params, descriptions
+
+        if self.text_encoder_loras:
+            loraplus_lr_ratio = self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio
+
+            # split text encoder loras for te1 and te2
+            te1_loras = [lora for lora in self.text_encoder_loras if lora.lora_name.startswith(self.LORA_PREFIX_TEXT_ENCODER1)]
+            te2_loras = [lora for lora in self.text_encoder_loras if lora.lora_name.startswith(self.LORA_PREFIX_TEXT_ENCODER2)]
+            if len(te1_loras) == 0 and len(te2_loras) == 0:
+                # SD1.5: single text encoder (prefix "lora_te"), use the first LR
+                logger.info(f"Text Encoder: {len(self.text_encoder_loras)} modules, LR {text_encoder_lr[0]}")
+                params, descriptions = assemble_params(self.text_encoder_loras, text_encoder_lr[0], loraplus_lr_ratio)
+                all_params.extend(params)
+                lr_descriptions.extend(["textencoder" + (" " + d if d else "") for d in descriptions])
+            else:
+                if len(te1_loras) > 0:
+                    logger.info(f"Text Encoder 1 (CLIP-L): {len(te1_loras)} modules, LR {text_encoder_lr[0]}")
+                    params, descriptions = assemble_params(te1_loras, text_encoder_lr[0], loraplus_lr_ratio)
+                    all_params.extend(params)
+                    lr_descriptions.extend(["textencoder 1 " + (" " + d if d else "") for d in descriptions])
+                if len(te2_loras) > 0:
+                    logger.info(f"Text Encoder 2 (CLIP-G): {len(te2_loras)} modules, LR {text_encoder_lr[1]}")
+                    params, descriptions = assemble_params(te2_loras, text_encoder_lr[1], loraplus_lr_ratio)
+                    all_params.extend(params)
+                    lr_descriptions.extend(["textencoder 2 " + (" " + d if d else "") for d in descriptions])
+
+        if self.unet_loras:
+            if self.block_lr:
+                is_sdxl = False
+                for lora in self.unet_loras:
+                    if "input_blocks" in lora.lora_name or "output_blocks" in lora.lora_name:
+                        is_sdxl = True
+                        break
+
+                # 学習率のグラフをblockごとにしたいので、blockごとにloraを分類
+                block_idx_to_lora = {}
+                for lora in self.unet_loras:
+                    idx = get_block_index(lora.lora_name, is_sdxl)
+                    if idx not in block_idx_to_lora:
+                        block_idx_to_lora[idx] = []
+                    block_idx_to_lora[idx].append(lora)
+
+                # blockごとにパラメータを設定する
+                for idx, block_loras in block_idx_to_lora.items():
+                    params, descriptions = assemble_params(
+                        block_loras,
+                        (unet_lr if unet_lr is not None else default_lr) * self.get_lr_weight(idx),
+                        self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio,
+                    )
+                    all_params.extend(params)
+                    lr_descriptions.extend([f"unet_block{idx}" + (" " + d if d else "") for d in descriptions])
+
+            else:
+                params, descriptions = assemble_params(
+                    self.unet_loras,
+                    unet_lr if unet_lr is not None else default_lr,
+                    self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio,
+                )
+                all_params.extend(params)
+                lr_descriptions.extend(["unet" + (" " + d if d else "") for d in descriptions])
+
+        return all_params, lr_descriptions
+
     # 二つのText Encoderに別々の学習率を設定できるようにするといいかも
     def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr):
         # TODO warn if optimizer is not compatible with LoRA+ (but it will cause error so we don't need to check it here?)
@@ -1251,6 +1526,35 @@ class LoRANetwork(torch.nn.Module):
 
     def get_trainable_params(self):
         return self.parameters()
+
+    def update_norms(self):
+        for lora in self.text_encoder_loras + self.unet_loras:
+            lora.update_norms()
+
+    def update_grad_norms(self):
+        for lora in self.text_encoder_loras + self.unet_loras:
+            lora.update_grad_norms()
+
+    def grad_norms(self) -> Tensor | None:
+        grad_norms = []
+        for lora in self.text_encoder_loras + self.unet_loras:
+            if hasattr(lora, "grad_norms") and lora.grad_norms is not None:
+                grad_norms.append(lora.grad_norms.mean(dim=0))
+        return torch.stack(grad_norms) if len(grad_norms) > 0 else None
+
+    def weight_norms(self) -> Tensor | None:
+        weight_norms = []
+        for lora in self.text_encoder_loras + self.unet_loras:
+            if hasattr(lora, "weight_norms") and lora.weight_norms is not None:
+                weight_norms.append(lora.weight_norms.mean(dim=0))
+        return torch.stack(weight_norms) if len(weight_norms) > 0 else None
+
+    def combined_weight_norms(self) -> Tensor | None:
+        combined_weight_norms = []
+        for lora in self.text_encoder_loras + self.unet_loras:
+            if hasattr(lora, "combined_weight_norms") and lora.combined_weight_norms is not None:
+                combined_weight_norms.append(lora.combined_weight_norms.mean(dim=0))
+        return torch.stack(combined_weight_norms) if len(combined_weight_norms) > 0 else None
 
     def save_weights(self, file, dtype, metadata):
         if metadata is not None and len(metadata) == 0:

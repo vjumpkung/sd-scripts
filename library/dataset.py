@@ -320,6 +320,7 @@ class BucketBatchIndex(NamedTuple):
     bucket_index: int
     bucket_batch_size: int
     batch_index: int
+    bucket_name: str = ""
 
 
 class AugHelper:
@@ -385,6 +386,7 @@ class BaseDataset(torch.utils.data.Dataset):
 
         self.enable_bucket = False
         self.bucket_manager: BucketManager = None  # not initialized
+        self.bucket_manager_dict: Dict[str, BucketManager] = {}  # for repeat_mode (per-subset bucket managers)
         self.min_bucket_reso = None
         self.max_bucket_reso = None
         self.bucket_reso_steps = None
@@ -714,12 +716,15 @@ class BaseDataset(torch.utils.data.Dataset):
         self.shuffle_buckets()
         self._length = len(self.buckets_indices)
 
-    def shuffle_buckets(self):
+    def shuffle_buckets(self, bucket_name: Optional[str] = None):
         # set random seed for this epoch
         random.seed(self.seed + self.current_epoch)
 
         random.shuffle(self.buckets_indices)
-        self.bucket_manager.shuffle()
+        if self.bucket_manager_dict and bucket_name is not None:
+            self.bucket_manager_dict[bucket_name].shuffle()
+        else:
+            self.bucket_manager.shuffle()
 
     def verify_bucket_reso_steps(self, min_steps: int):
         assert self.bucket_reso_steps is None or self.bucket_reso_steps % min_steps == 0, (
@@ -986,10 +991,15 @@ class BaseDataset(torch.utils.data.Dataset):
     def __len__(self):
         return self._length
 
-    def __getitem__(self, index):
+    def _resolve_bucket(self, index):
+        # overridable hook: returns (bucket, bucket_batch_size, image_index) for the given dataset index
         bucket = self.bucket_manager.buckets[self.buckets_indices[index].bucket_index]
         bucket_batch_size = self.buckets_indices[index].bucket_batch_size
         image_index = self.buckets_indices[index].batch_index * bucket_batch_size
+        return bucket, bucket_batch_size, image_index
+
+    def __getitem__(self, index):
+        bucket, bucket_batch_size, image_index = self._resolve_bucket(index)
 
         loss_weights = []
         captions = []

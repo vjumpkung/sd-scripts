@@ -1231,6 +1231,14 @@ class NetworkTrainer:
             accelerator.print("enable full bf16 training.")
             network.to(weight_dtype)
 
+        if args.custom_timesteps:
+            accelerator.print(
+                f"run custom timesteps with std={args.timesteps_std} mean_t={args.timesteps_mean_t} "
+                f"left_sigma={args.timesteps_left_sigma} right_sigma={args.timesteps_right_sigma} "
+                f"low_boost_range={(args.timesteps_low_boost_range_start, args.timesteps_low_boost_range_end)} "
+                f"low_boost_factor={args.timesteps_low_boost_factor}"
+            )
+
         unet_weight_dtype = te_weight_dtype = weight_dtype
         # Experimental Feature: Put base model into fp8 to save vram
         if args.fp8_base or args.fp8_base_unet:
@@ -2032,6 +2040,53 @@ def setup_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Max number of validation dataset items processed. By default, validation will run the entire validation dataset / 処理される検証データセット項目の最大数。デフォルトでは、検証は検証データセット全体を実行します",
+    )
+    parser.add_argument(
+        "--custom_timesteps",
+        action="store_true",
+        help="custom timesteps should use with --timesteps_std --timesteps_mean_t --timesteps_left_sigma --timesteps_right_sigma --timesteps_low_boost_range_start --timesteps_low_boost_range_end --timesteps_low_boost_factor to customize",
+    )
+    parser.add_argument(
+        "--timesteps_std",
+        type=int,
+        default=100,
+        help="make mean_t wider like standard derivation",
+    )
+    parser.add_argument(
+        "--timesteps_mean_t",
+        type=int,
+        default=300,
+        help="weight of specific timesteps that will be focus",
+    )
+    parser.add_argument(
+        "--timesteps_left_sigma",
+        type=float,
+        default=300,
+        help="sigma of left side of mean_t",
+    )
+    parser.add_argument(
+        "--timesteps_right_sigma",
+        type=float,
+        default=200,
+        help="sigma of right side of mean_t",
+    )
+    parser.add_argument(
+        "--timesteps_low_boost_range_start",
+        type=int,
+        default=50,
+        help="start of low timestep boost range",
+    )
+    parser.add_argument(
+        "--timesteps_low_boost_range_end",
+        type=int,
+        default=250,
+        help="end of low timestep boost range",
+    )
+    parser.add_argument(
+        "--timesteps_low_boost_factor",
+        type=float,
+        default=1,
+        help="boost factor for low timestep range",
     )
     return parser
 

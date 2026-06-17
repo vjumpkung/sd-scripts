@@ -19,6 +19,7 @@ module.
 import math
 from typing import Optional, Tuple
 
+import numpy as np
 import torch
 
 from library import custom_train_functions
@@ -31,6 +32,33 @@ def get_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: tor
         timesteps = torch.full((b_size,), max_timestep, device="cpu")
     timesteps = timesteps.long().to(device)
     return timesteps
+
+
+def get_custom_timesteps(
+    min_timestep: int,
+    max_timestep: int,
+    b_size: int,
+    device: torch.device,
+    mean_t: float = 600,
+    left_sigma: float = 300,
+    right_sigma: float = 200,
+    low_boost_range=(50, 250),
+    low_boost_factor=1,
+) -> torch.Tensor:
+    t = np.arange(min_timestep, max_timestep)
+
+    w_left = np.exp(-0.5 * ((t[t <= mean_t] - mean_t) / left_sigma) ** 2)
+    w_right = np.exp(-0.5 * ((t[t > mean_t] - mean_t) / right_sigma) ** 2)
+    w = np.concatenate([w_left, w_right])
+
+    boost_mask = (t >= low_boost_range[0]) & (t <= low_boost_range[1])
+    w[boost_mask] *= low_boost_factor
+
+    w = np.clip(w, 1e-6, None)
+    w /= w.sum()
+
+    timesteps = np.random.choice(t, size=b_size, p=w)
+    return torch.tensor(timesteps, device=device).long()
 
 
 def get_noise_noisy_latents_and_timesteps(
@@ -53,7 +81,20 @@ def get_noise_noisy_latents_and_timesteps(
     b_size = latents.shape[0]
     min_timestep = 0 if args.min_timestep is None else args.min_timestep
     max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
-    timesteps = get_timesteps(min_timestep, max_timestep, b_size, latents.device)
+    if getattr(args, "custom_timesteps", False):
+        timesteps = get_custom_timesteps(
+            min_timestep,
+            max_timestep,
+            b_size,
+            latents.device,
+            mean_t=args.timesteps_mean_t,
+            left_sigma=args.timesteps_left_sigma,
+            right_sigma=args.timesteps_right_sigma,
+            low_boost_range=(args.timesteps_low_boost_range_start, args.timesteps_low_boost_range_end),
+            low_boost_factor=args.timesteps_low_boost_factor,
+        )
+    else:
+        timesteps = get_timesteps(min_timestep, max_timestep, b_size, latents.device)
 
     # Add noise to the latents according to the noise magnitude at each timestep
     # (this is the forward diffusion process)
@@ -83,7 +124,7 @@ def get_huber_threshold_if_needed(args, timesteps: torch.Tensor, noise_scheduler
     elif args.huber_schedule == "snr":
         if not hasattr(noise_scheduler, "alphas_cumprod"):
             raise NotImplementedError("Huber schedule 'snr' is not supported with the current model.")
-        alphas_cumprod = torch.index_select(noise_scheduler.alphas_cumprod, 0, timesteps.cpu())
+        alphas_cumprod = torch.index_select(noise_scheduler.alphas_cumprod, 0, timesteps.to(noise_scheduler.alphas_cumprod.device))
         sigmas = ((1.0 - alphas_cumprod) / alphas_cumprod) ** 0.5
         result = (1 - args.huber_c) / (1 + sigmas) ** 2 + args.huber_c
         result = result.to(timesteps.device)

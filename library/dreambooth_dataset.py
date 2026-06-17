@@ -8,13 +8,17 @@ imports the abstract :class:`~library.dataset.BaseDataset` and its
 import glob
 import json
 import logging
+import math
 import os
 from typing import List, Optional, Sequence, Tuple
 
+import numpy as np
 from tqdm import tqdm
 
 from library.dataset import (
     BaseDataset,
+    BucketBatchIndex,
+    BucketManager,
     ImageInfo,
     glob_images,
     split_train_val,
@@ -52,6 +56,7 @@ class DreamBoothDataset(BaseDataset):
         validation_seed: Optional[int],
         resize_interpolation: Optional[str],
         skip_image_resolution: Optional[Tuple[int, int]] = None,
+        repeat_mode: bool = False,
     ) -> None:
         super().__init__(
             resolution,
@@ -73,6 +78,8 @@ class DreamBoothDataset(BaseDataset):
         self.validation_split = validation_split
 
         self.enable_bucket = enable_bucket
+        self.make_repeats_bucket = repeat_mode  # EXPERIMENTAL: separate bucket per subset
+        self.buckets_indices_dict = {}
         if self.enable_bucket:
             min_bucket_reso, max_bucket_reso = self.adjust_min_max_bucket_reso_by_steps(
                 resolution, min_bucket_reso, max_bucket_reso, bucket_reso_steps
@@ -344,3 +351,115 @@ class DreamBoothDataset(BaseDataset):
                 first_loop = False
 
         self.num_reg_images = num_reg_images
+
+    def make_buckets(self):
+        # When repeat_mode is disabled (or bucketing is off), use the standard single-bucket-manager path.
+        if not (self.make_repeats_bucket and self.enable_bucket):
+            return super().make_buckets()
+
+        # EXPERIMENTAL: build a separate bucket manager for each subset.
+        logger.info("loading image sizes.")
+        for info in tqdm(self.image_data.values()):
+            if info.image_size is None:
+                info.image_size = self.get_image_size(info.absolute_path)
+
+        logger.info("make buckets (per subset / repeat_mode)")
+
+        self._length = 0
+        counter = 0
+        self.buckets_indices: List[BucketBatchIndex] = []
+        for subset in self.subsets:
+            # bucketを作成し、画像をbucketに振り分ける
+            bucket_name = f"{subset.num_repeats}_{subset.class_tokens}"
+            bucket_manager = BucketManager(
+                self.bucket_no_upscale,
+                (self.width, self.height),
+                self.min_bucket_reso,
+                self.max_bucket_reso,
+                self.bucket_reso_steps,
+            )
+            self.bucket_manager_dict[bucket_name] = bucket_manager
+            if not self.bucket_no_upscale:
+                bucket_manager.make_buckets()
+            else:
+                logger.warning(
+                    "min_bucket_reso and max_bucket_reso are ignored if bucket_no_upscale is set, because bucket reso is defined by image size automatically / bucket_no_upscaleが指定された場合は、bucketの解像度は画像サイズから自動計算されるため、min_bucket_resoとmax_bucket_resoは無視されます"
+                )
+
+            img_ar_errors = []
+            for image_info in self.image_data.values():
+                if subset.image_dir in image_info.absolute_path:
+                    image_width, image_height = image_info.image_size
+                    image_info.bucket_reso, image_info.resized_size, ar_error = bucket_manager.select_bucket(
+                        image_width, image_height
+                    )
+                    img_ar_errors.append(abs(ar_error))
+
+            bucket_manager.sort()
+
+            for image_info in self.image_data.values():
+                if subset.image_dir in image_info.absolute_path:
+                    for _ in range(image_info.num_repeats):
+                        bucket_manager.add_image(image_info.bucket_reso, image_info.image_key)
+
+            # bucket情報を表示、格納する
+            self.bucket_info = {"buckets": {}}
+            logger.info("number of images (including repeats) / 各bucketの画像枚数（繰り返し回数を含む）")
+            for bucket_index, (reso, bucket) in enumerate(zip(bucket_manager.resos, bucket_manager.buckets)):
+                count = len(bucket)
+                if count > 0:
+                    self.bucket_info["buckets"][bucket_index] = {"resolution": reso, "count": len(bucket)}
+                    logger.info(f"bucket {bucket_name} {bucket_index}: resolution {reso}, count: {len(bucket)}")
+
+            if len(img_ar_errors) == 0:
+                mean_img_ar_error = 0  # avoid NaN
+            else:
+                img_ar_errors = np.array(img_ar_errors)
+                mean_img_ar_error = np.mean(np.abs(img_ar_errors))
+            self.bucket_info["mean_img_ar_error"] = mean_img_ar_error
+            logger.info(f"mean ar error (without repeats): {mean_img_ar_error}")
+
+            # データ参照用indexを作る。このindexはdatasetのshuffleに用いられる
+            for bucket_index, bucket in enumerate(bucket_manager.buckets):
+                batch_count = int(math.ceil(len(bucket) / self.batch_size))
+                for batch_index in range(batch_count):
+                    self.buckets_indices.append(
+                        BucketBatchIndex(bucket_index, self.batch_size, batch_index, bucket_name=bucket_name)
+                    )
+                    if self.buckets_indices_dict.get(bucket_name, None) is None:
+                        self.buckets_indices_dict[bucket_name] = []
+                    self.buckets_indices_dict[bucket_name].append(counter)
+                    counter += 1
+
+            self.shuffle_buckets(bucket_name)
+            self._length = len(self.buckets_indices)
+
+        logger.info(f"total number of big buckets: {len(self.bucket_manager_dict)}")
+        logger.info(f"total number of bucket indices: {self._length} / バケットのインデックスの総数: {self._length}")
+
+    def set_current_epoch(self, epoch):
+        if not self.make_repeats_bucket:
+            return super().set_current_epoch(epoch)
+
+        if not self.current_epoch == epoch:  # epochが切り替わったらバケツをシャッフルする
+            if epoch > self.current_epoch:
+                logger.info("epoch is incremented. current_epoch: {}, epoch: {}".format(self.current_epoch, epoch))
+                num_epochs = epoch - self.current_epoch
+                for _ in range(num_epochs):
+                    self.current_epoch += 1
+                    logger.info(f"shuffle buckets for epoch {self.current_epoch}")
+                    for bucket_name in self.bucket_manager_dict.keys():
+                        self.shuffle_buckets(bucket_name)
+            else:
+                logger.warning("epoch is not incremented. current_epoch: {}, epoch: {}".format(self.current_epoch, epoch))
+                self.current_epoch = epoch
+
+    def _resolve_bucket(self, index):
+        if not self.make_repeats_bucket:
+            return super()._resolve_bucket(index)
+
+        name = self.buckets_indices[index].bucket_name
+        bucket = self.bucket_manager_dict[name].buckets[self.buckets_indices[index].bucket_index]
+        bucket_batch_size = self.buckets_indices[index].bucket_batch_size
+        image_index = self.buckets_indices[index].batch_index * bucket_batch_size
+        return bucket, bucket_batch_size, image_index
