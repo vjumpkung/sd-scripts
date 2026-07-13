@@ -351,6 +351,38 @@ You can specify different ranks (network_dim) and learning rates for modules mat
 * Settings via `network_reg_dims` and `network_reg_lrs` take precedence over the global `--network_dim` and `--learning_rate` settings.
 * Patterns are matched using `re.fullmatch()` against the module's original name (e.g., `blocks.0.self_attn.q_proj`).
 
+For easier configuration, `anima_train_network.py` also provides 12 dedicated shortcuts. `dim` means LoRA rank; setting it to `0` disables LoRA for that component.
+
+| Component | Rank | Learning rate |
+|---|---|---|
+| DiT/UNet self-attention | `--unet_self_attn_dim` | `--unet_self_attn_lr` |
+| DiT/UNet cross-attention | `--unet_cross_attn_dim` | `--unet_cross_attn_lr` |
+| DiT/UNet MLP | `--unet_mlp_dim` | `--unet_mlp_lr` |
+| Qwen3 text-encoder self-attention | `--te_self_attn_dim` | `--te_self_attn_lr` |
+| Qwen3 text-encoder cross-attention | `--te_cross_attn_dim` | `--te_cross_attn_lr` |
+| Qwen3 text-encoder MLP | `--te_mlp_dim` | `--te_mlp_lr` |
+
+Example:
+
+```bash
+--unet_self_attn_dim=16 \
+--unet_self_attn_lr=1e-4 \
+--unet_cross_attn_dim=8 \
+--unet_cross_attn_lr=5e-5 \
+--unet_mlp_dim=16 \
+--unet_mlp_lr=2e-4 \
+--te_self_attn_dim=8 \
+--te_self_attn_lr=1e-5 \
+--te_cross_attn_dim=8 \
+--te_cross_attn_lr=1e-5 \
+--te_mlp_dim=16 \
+--te_mlp_lr=2e-5
+```
+
+Unset component dimensions fall back to `--network_dim`. Unset component learning rates fall back to `--unet_lr` or `--text_encoder_lr`, then `--learning_rate`. If the low-level `network_reg_dims` or `network_reg_lrs` options are also supplied, their regexes have priority over these shortcuts. Do not use `--network_train_unet_only` when training the text-encoder LoRA.
+
+Qwen3 currently has self-attention and MLP modules but no cross-attention modules. Therefore, the two `te_cross_attn` options are accepted for configuration symmetry and future compatibility, but do not match any module in the current text encoder.
+
 ### 5.3. LLM Adapter LoRA / LLM Adapter LoRA
 
 To apply LoRA to the LLM Adapter blocks:
@@ -406,6 +438,21 @@ In preliminary tests, lowering the learning rate for the LLM Adapter seems to im
 **注意点:**
 * `network_reg_dims`および`network_reg_lrs`での設定は、全体設定である`--network_dim`や`--learning_rate`よりも優先されます。
 * パターンはモジュールのオリジナル名（例: `blocks.0.self_attn.q_proj`）に対して`re.fullmatch()`でマッチングされます。
+
+設定を簡単にするため、`anima_train_network.py`には12個の専用ショートカットもあります。`dim`はLoRAのrankを意味し、`0`にするとそのコンポーネントのLoRAを無効化します。
+
+| コンポーネント | Rank | 学習率 |
+|---|---|---|
+| DiT/UNet self-attention | `--unet_self_attn_dim` | `--unet_self_attn_lr` |
+| DiT/UNet cross-attention | `--unet_cross_attn_dim` | `--unet_cross_attn_lr` |
+| DiT/UNet MLP | `--unet_mlp_dim` | `--unet_mlp_lr` |
+| Qwen3 text encoder self-attention | `--te_self_attn_dim` | `--te_self_attn_lr` |
+| Qwen3 text encoder cross-attention | `--te_cross_attn_dim` | `--te_cross_attn_lr` |
+| Qwen3 text encoder MLP | `--te_mlp_dim` | `--te_mlp_lr` |
+
+未指定のdimensionは`--network_dim`にフォールバックします。未指定の学習率は`--unet_lr`または`--text_encoder_lr`、さらに`--learning_rate`へフォールバックします。低レベルの`network_reg_dims`または`network_reg_lrs`も指定した場合、その正規表現が専用ショートカットより優先されます。Text Encoder LoRAも学習する場合は`--network_train_unet_only`を使用しないでください。
+
+現在のQwen3にはself-attentionとMLPがありますが、cross-attentionモジュールはありません。そのため、2つの`te_cross_attn`オプションは設定の対称性と将来の互換性のため受け付けますが、現在のText Encoderではどのモジュールにもマッチしません。
 
 ### 5.3. LLM Adapter LoRA
 

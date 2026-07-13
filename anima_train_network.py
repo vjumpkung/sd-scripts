@@ -22,6 +22,7 @@ from library import (
     sampling,
 )
 import library.args as args_util
+from library.anima_lora_args import add_anima_lora_component_arguments, apply_anima_lora_component_args
 import library.compile_utils as compile_utils
 import library.model_io as model_io
 from library.dataset import DatasetGroup, MinimalDataset
@@ -45,6 +46,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         train_dataset_group: Union[DatasetGroup, MinimalDataset],
         val_dataset_group: Optional[DatasetGroup],
     ):
+        apply_anima_lora_component_args(args)
         flux_train_utils.log_timestep_sampling_info(args)
 
         if args.fp8_base or args.fp8_base_unet:
@@ -450,6 +452,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
     args_util.add_dit_training_arguments(parser)
     anima_train_utils.add_anima_training_arguments(parser)
+    add_anima_lora_component_arguments(parser)
     # parser.add_argument("--fp8_scaled", action="store_true", help="Use scaled fp8 for DiT / DiTにスケーリングされたfp8を使う")
     parser.add_argument(
         "--unsloth_offload_checkpointing",
