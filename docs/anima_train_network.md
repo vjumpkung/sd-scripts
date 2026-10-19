@@ -550,7 +550,8 @@ The `--weighting_scheme` option specifies loss weighting by timestep:
 - `sigma_sqrt`: Weight by `sigma^(-2)`.
 - `cosmap`: Weight by `2 / (pi * (1 - 2*sigma + 2*sigma^2))`.
 - `none`: Same as uniform.
-- `logit_normal`, `mode`: Additional schemes from SD3 training. See the [`sd3_train_network.md` guide](sd3_train_network.md) for details.
+- `logit_normal`: With `--timestep_sampling=sigma`, timesteps are sampled from a logit-normal distribution (`--logit_mean`, `--logit_std`). For Anima, the loss is also weighted by the matching logit-normal density over sigma, with any `--timestep_sampling`. A positive `--logit_mean` favors cleaner (lower-noise) timesteps; with `sigma` sampling the two effects stack.
+- `mode`: Additional scheme from SD3 training. See the [`sd3_train_network.md` guide](sd3_train_network.md) for details.
 
 #### Visualizing the Timestep Distribution
 

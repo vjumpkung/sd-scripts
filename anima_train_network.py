@@ -344,7 +344,9 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         target = noise - latents
 
         # Loss weighting
-        weighting = anima_train_utils.compute_loss_weighting_for_anima(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
+        weighting = anima_train_utils.compute_loss_weighting_for_anima(
+            weighting_scheme=args.weighting_scheme, sigmas=sigmas, logit_mean=args.logit_mean, logit_std=args.logit_std
+        )
 
         return model_pred, target, timesteps, weighting
 

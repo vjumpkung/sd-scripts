@@ -573,7 +573,7 @@ def train(args):
 
                 # Weighting
                 weighting = anima_train_utils.compute_loss_weighting_for_anima(
-                    weighting_scheme=args.weighting_scheme, sigmas=sigmas
+                    weighting_scheme=args.weighting_scheme, sigmas=sigmas, logit_mean=args.logit_mean, logit_std=args.logit_std
                 )
 
                 # Loss
@@ -584,7 +584,7 @@ def train(args):
                 loss = loss.mean([1, 2, 3])  # (B, C, H, W) -> (B,)
 
                 if weighting is not None:
-                    loss = loss * weighting
+                    loss = loss * weighting.view(-1)  # (B, 1, 1, 1) -> (B,) to match the per-sample loss
 
                 loss_weights = batch["loss_weights"]
                 loss = loss * loss_weights

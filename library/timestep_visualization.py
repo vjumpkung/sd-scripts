@@ -56,7 +56,8 @@ def show_timestep_distribution(
     sampled_timesteps = np.zeros(num_train_timesteps, dtype=np.float64)
     for _ in tqdm(range(max(1, n_try // batch_size)), desc="sampling timesteps"):
         timesteps = sample_timesteps(batch_size).detach().flatten().float().cpu().numpy()
-        indices = np.clip(timesteps.astype(np.int64), 0, num_train_timesteps - 1)
+        # small epsilon: float32 scheduler timesteps like 505.99997 must land in bin 505, not 504
+        indices = np.clip(np.floor(timesteps + 1e-3).astype(np.int64), 0, num_train_timesteps - 1)
         np.add.at(sampled_timesteps, indices, 1.0)
 
     # --- compute the loss weighting per timestep ---

@@ -225,16 +225,28 @@ def load_qwen_image_vae(args, device="cpu", disable_mmap: bool = True):
 # Loss weighting
 
 
-def compute_loss_weighting_for_anima(weighting_scheme: str, sigmas: torch.Tensor) -> torch.Tensor:
+def compute_loss_weighting_for_anima(
+    weighting_scheme: str, sigmas: torch.Tensor, logit_mean: float = 0.0, logit_std: float = 1.0
+) -> torch.Tensor:
     """Compute loss weighting for Anima training.
 
     Same schemes as SD3 but can add Anima-specific ones if needed in future.
+
+    logit_normal: pdf of LogitNormal(-logit_mean, logit_std) over sigma, i.e. the same distribution that
+    timestep_sampling="sigma" samples (scheduler timesteps are descending), so a positive logit_mean favors
+    cleaner timesteps. With timestep_sampling="sigma" the sampling and this weight stack.
     """
     if weighting_scheme == "sigma_sqrt":
         weighting = (sigmas**-2.0).float()
     elif weighting_scheme == "cosmap":
         bot = 1 - 2 * sigmas + 2 * sigmas**2
         weighting = 2 / (math.pi * bot)
+    elif weighting_scheme == "logit_normal":
+        if logit_std <= 0:
+            raise ValueError(f"logit_std must be > 0 for logit_normal loss weighting, got {logit_std}")
+        s = sigmas.float().clamp(1e-5, 1 - 1e-5)
+        logit = torch.log(s / (1 - s))
+        weighting = torch.exp(-((logit + logit_mean) ** 2) / (2 * logit_std**2)) / (logit_std * math.sqrt(2 * math.pi) * s * (1 - s))
     elif weighting_scheme == "none" or weighting_scheme is None:
         weighting = torch.ones_like(sigmas)
     else:
@@ -268,7 +280,7 @@ def show_timesteps(args):
 
     def compute_weighting(timesteps):
         sigmas = timesteps / num_train_timesteps
-        return compute_loss_weighting_for_anima(args.weighting_scheme, sigmas)
+        return compute_loss_weighting_for_anima(args.weighting_scheme, sigmas, logit_mean=args.logit_mean, logit_std=args.logit_std)
 
     header = (
         "Timestep distribution / タイムステップ分布:\n  "
