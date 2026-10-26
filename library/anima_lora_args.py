@@ -1,10 +1,6 @@
 """Dedicated component-level CLI arguments for Anima LoRA training."""
 
 import argparse
-import logging
-
-
-logger = logging.getLogger(__name__)
 
 
 ANIMA_LORA_COMPONENT_PATTERNS = (
@@ -12,7 +8,6 @@ ANIMA_LORA_COMPONENT_PATTERNS = (
     ("unet_cross_attn", r"blocks\.\d+\.cross_attn\..*"),
     ("unet_mlp", r"blocks\.\d+\.mlp\..*"),
     ("te_self_attn", r"layers\.\d+\.self_attn\..*"),
-    ("te_cross_attn", r"layers\.\d+\.cross_attn\..*"),
     ("te_mlp", r"layers\.\d+\.mlp\..*"),
 )
 
@@ -38,7 +33,6 @@ def add_anima_lora_component_arguments(parser: argparse.ArgumentParser) -> None:
         "unet_cross_attn": "DiT cross-attention",
         "unet_mlp": "DiT MLP",
         "te_self_attn": "Qwen3 text-encoder self-attention",
-        "te_cross_attn": "Qwen3 text-encoder cross-attention",
         "te_mlp": "Qwen3 text-encoder MLP",
     }
     for option_prefix, _ in ANIMA_LORA_COMPONENT_PATTERNS:
@@ -99,9 +93,3 @@ def apply_anima_lora_component_args(args: argparse.Namespace) -> None:
     network_args = _merge_generated_network_arg(network_args, "network_reg_dims", dim_pairs)
     network_args = _merge_generated_network_arg(network_args, "network_reg_lrs", lr_pairs)
     args.network_args = network_args or None
-
-    if arg_values.get("te_cross_attn_dim") is not None or arg_values.get("te_cross_attn_lr") is not None:
-        logger.warning(
-            "Qwen3 currently has no cross-attention modules, so --te_cross_attn_dim/--te_cross_attn_lr "
-            "will not match a module in the current Anima text encoder."
-        )

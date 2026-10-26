@@ -20,7 +20,7 @@ def make_component_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def test_component_parser_exposes_all_twelve_options():
+def test_component_parser_exposes_all_ten_options():
     parser = make_component_parser()
     command = []
     for component in COMPONENT_NAMES:
