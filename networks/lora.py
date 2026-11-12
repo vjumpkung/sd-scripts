@@ -233,6 +233,9 @@ class LoRAModule(torch.nn.Module):
 
     @torch.no_grad()
     def update_grad_norms(self):
+        if self.ggpo_beta is None or self.ggpo_sigma is None:
+            return
+
         if self.training is False:
             print(f"skipping update_grad_norms for {self.lora_name}")
             return
