@@ -345,14 +345,18 @@ You can specify different ranks (network_dim) and learning rates for modules mat
 * `network_reg_dims`: Specify ranks for modules matching a regular expression. The format is a comma-separated string of `pattern=rank`.
     * Example: `--network_args "network_reg_dims=.*self_attn.*=8,.*cross_attn.*=4,.*mlp.*=8"`
     * This sets the rank to 8 for self-attention modules, 4 for cross-attention modules, and 8 for MLP modules.
+* `network_reg_alphas`: Specify alpha for modules matching a regular expression. The format is a comma-separated string of `pattern=alpha` (alpha is a float). The first matching pattern wins, and modules that match no pattern use `--network_alpha`. An alpha of `0` means alpha equals the rank (scale 1.0).
+    * Example: `--network_args "network_reg_alphas=.*self_attn.*=8,.*cross_attn.*=4"`
+    * This sets alpha to 8 for self-attention modules and 4 for cross-attention modules. It is matched independently of `network_reg_dims`, so it can be combined with it (the scale is alpha / rank of each module).
 * `network_reg_lrs`: Specify learning rates for modules matching a regular expression. The format is a comma-separated string of `pattern=lr`.
     * Example: `--network_args "network_reg_lrs=.*self_attn.*=1e-4,.*cross_attn.*=5e-5"`
     * This sets the learning rate to `1e-4` for self-attention modules and `5e-5` for cross-attention modules.
 
 **Notes:**
 
-* Settings via `network_reg_dims` and `network_reg_lrs` take precedence over the global `--network_dim` and `--learning_rate` settings.
+* Settings via `network_reg_dims`, `network_reg_alphas` and `network_reg_lrs` take precedence over the global `--network_dim`, `--network_alpha` and `--learning_rate` settings.
 * Patterns are matched using `re.fullmatch()` against the module's original name (e.g., `blocks.0.self_attn.q_proj`).
+* Patterns for these options cannot contain `,` or `=`, because those characters separate the pairs and the values.
 
 For easier configuration, `anima_train_network.py` also provides 10 dedicated shortcuts. `dim` means LoRA rank; setting it to `0` disables LoRA for that component.
 
@@ -430,12 +434,16 @@ In preliminary tests, lowering the learning rate for the LLM Adapter seems to im
 
 * `network_reg_dims`: 正規表現にマッチするモジュールに対してランクを指定します。`pattern=rank`形式の文字列をカンマで区切って指定します。
     * 例: `--network_args "network_reg_dims=.*self_attn.*=8,.*cross_attn.*=4,.*mlp.*=8"`
+* `network_reg_alphas`: 正規表現にマッチするモジュールに対してalphaを指定します。`pattern=alpha`形式（alphaは小数可）の文字列をカンマで区切って指定します。最初にマッチしたパターンが優先され、どのパターンにもマッチしないモジュールには`--network_alpha`が使われます。`0`を指定するとalphaはrankと同じ値になります（スケール1.0）。
+    * 例: `--network_args "network_reg_alphas=.*self_attn.*=8,.*cross_attn.*=4"`
+    * `network_reg_dims`とは独立してマッチングされるため、併用できます（スケールは各モジュールのalpha / rankになります）。
 * `network_reg_lrs`: 正規表現にマッチするモジュールに対して学習率を指定します。`pattern=lr`形式の文字列をカンマで区切って指定します。
     * 例: `--network_args "network_reg_lrs=.*self_attn.*=1e-4,.*cross_attn.*=5e-5"`
 
 **注意点:**
-* `network_reg_dims`および`network_reg_lrs`での設定は、全体設定である`--network_dim`や`--learning_rate`よりも優先されます。
+* `network_reg_dims`、`network_reg_alphas`および`network_reg_lrs`での設定は、全体設定である`--network_dim`、`--network_alpha`や`--learning_rate`よりも優先されます。
 * パターンはモジュールのオリジナル名（例: `blocks.0.self_attn.q_proj`）に対して`re.fullmatch()`でマッチングされます。
+* これらのオプションのパターンには、ペアや値の区切りに使われる`,`と`=`を含めることはできません。
 
 設定を簡単にするため、`anima_train_network.py`には10個の専用ショートカットもあります。`dim`はLoRAのrankを意味し、`0`にするとそのコンポーネントのLoRAを無効化します。
 

@@ -307,6 +307,12 @@ def create_network(
     else:
         reg_dims = None
 
+    network_reg_alphas = kwargs.get("network_reg_alphas", None)
+    if network_reg_alphas is not None:
+        reg_alphas = parse_kv_pairs(network_reg_alphas, is_int=False)
+    else:
+        reg_alphas = None
+
     network = LoRANetwork(
         text_encoders,
         unet,
@@ -321,6 +327,7 @@ def create_network(
         include_patterns=include_patterns,
         reg_dims=reg_dims,
         reg_lrs=reg_lrs,
+        reg_alphas=reg_alphas,
         verbose=verbose,
     )
 
@@ -405,6 +412,7 @@ class LoRANetwork(torch.nn.Module):
         include_patterns: Optional[List[str]] = None,
         reg_dims: Optional[Dict[str, int]] = None,
         reg_lrs: Optional[Dict[str, float]] = None,
+        reg_alphas: Optional[Dict[str, float]] = None,
         verbose: Optional[bool] = False,
     ) -> None:
         super().__init__()
@@ -417,6 +425,7 @@ class LoRANetwork(torch.nn.Module):
         self.train_llm_adapter = train_llm_adapter
         self.reg_dims = reg_dims
         self.reg_lrs = reg_lrs
+        self.reg_alphas = reg_alphas
 
         self.loraplus_lr_ratio = None
         self.loraplus_unet_lr_ratio = None
@@ -500,6 +509,14 @@ class LoRANetwork(torch.nn.Module):
                                     if is_linear or is_conv2d_1x1:
                                         dim = default_dim if default_dim is not None else self.lora_dim
                                         alpha_val = self.alpha
+
+                                # per-module alpha by regex (independent of the reg_dims match; first match wins)
+                                if dim is not None and self.reg_alphas is not None:
+                                    for reg, a in self.reg_alphas.items():
+                                        if re.fullmatch(reg, original_name):
+                                            alpha_val = a
+                                            logger.info(f"Module {original_name} matched with regex '{reg}' -> alpha: {a}")
+                                            break
 
                             if dim is None or dim == 0:
                                 if is_linear or is_conv2d_1x1:
